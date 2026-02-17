@@ -1,19 +1,19 @@
 Configured (verified 2026-02-17)
 
-Active scheduler (system):
-- Source plist: /Users/khemra/dev/crispy-sniffle/automation/com.grok.portfolio.daily.daemon.plist
-- Installed plist: /Library/LaunchDaemons/com.grok.portfolio.daily.daemon.plist
-- Label: com.grok.portfolio.daily.daemon
-- Domain: system (LaunchDaemon, runs without user login)
+Active scheduler (user):
+- Source plist: /Users/khemra/dev/crispy-sniffle/automation/com.grok.portfolio.daily.plist
+- Installed plist: ~/Library/LaunchAgents/com.grok.portfolio.daily.plist
+- Label: com.grok.portfolio.daily
+- Domain: gui/501 (LaunchAgent)
 - Schedule: Weekdays (Mon-Fri) at 17:15 local time (CST)
 
 Power wake schedule:
 - pmset repeat wakeorpoweron MTWRF 17:10:00
 
 Verification:
-- launchctl bootstrap + enable succeeded for label com.grok.portfolio.daily.daemon
-- Manual trigger via sudo launchctl kickstart completed with exit code 0
-- Runtime logs show full successful completion in trading_launchd.err.log
+- launchctl bootstrap + enable succeeded for label com.grok.portfolio.daily
+- launchctl print shows active calendar triggers for weekday 17:15
 
-Previous user LaunchAgent:
-- Label com.grok.portfolio.daily is disabled to avoid duplicate runs
+System LaunchDaemon:
+- Label com.grok.portfolio.daily.daemon is disabled to avoid duplicate runs
+- /Library/LaunchDaemons/com.grok.portfolio.daily.daemon.plist removed
