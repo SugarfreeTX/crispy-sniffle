@@ -1,0 +1,26 @@
+# Core dependencies for Grok Portfolio Manager
+
+# Market data and analysis
+yfinance>=0.2.40
+pandas>=2.2.0
+pandas_market_calendars>=4.4.0
+
+# API requests
+requests>=2.31.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Instagram content creation
+instagrapi>=2.1.0
+Pillow>=10.3.0
+
+# Standard library packages (already included in Python)
+# - json
+# - datetime
+# - logging
+# - os
+# - typing
+# - io
+# - pathlib
+# - time

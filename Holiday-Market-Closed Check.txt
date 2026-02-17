@@ -1,0 +1,12 @@
+Yes, adding a proper holiday / market-closed check is a simple and low-risk enhancement — definitely not a major change. It requires only a small addition to your script (mostly in the is_market_open() function and perhaps a quick data-freshness check), with no big restructuring needed.
+Why It's Worth Doing Now (Especially for Task Scheduler)
+
+Your current is_market_open() only skips weekends → on holidays, the script runs, fetches stale data (yfinance returns the last trading day's bars), computes indicators on old prices, and could send a misleading packet to Grok or even place an order based on yesterday's close.
+Result: Potential false signals, duplicate trades (if it thinks it's a new day), or wasted API calls. In unattended mode (Task Scheduler), this could go unnoticed until you check logs.
+A solid check prevents all that: If market is closed/holiday, log a message and exit early → safe and clean.
+
+Recommended Implementation: Simple & Effective
+We'll combine:
+- Weekend skip (keep what you have).
+- Holiday list — Hardcode the 2026 US stock market holidays (from NYSE/Nasdaq official calendars). There are only ~9 full closures per year, so a small set is fine and reliable (no external dependency).
+- Data freshness check — After fetching hist, verify the last bar's date is yesterday (or today if run very late) → if stale, treat as closed.

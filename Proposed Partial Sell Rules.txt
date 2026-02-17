@@ -1,0 +1,18 @@
+Proposed Partial Sell Rules
+We'll use a tiered scaling-out approach based on unrealized profit percentage:
+
++8% to +14.9% unrealized PnL → Sell 30% of current shares
++15% to +24.9% unrealized PnL → Sell 40% of current shares
++25% or higher → Sell 60% of current shares (leaving ~40% to run longer)
+
+Additional guards:
+
+Only trigger partial sells if the trend is Bullish or Neutral (using your new trend_label / price_above_200_sma).
+In Bearish trend → full sell (100%) to protect capital.
+Never partial-sell if unrealized PnL is negative (i.e., no averaging down or partial loss-cutting here — that's a separate future enhancement if needed).
+If Grok outputs SELL but PnL is < +8%, do a full sell (safety first).
+Partial sells only apply when you hold shares > 0.
+
+These thresholds are conservative for a stock like MSFT (which can have multi-week runs) but still lock in meaningful gains progressively.
+
+Let me know if you want to adjust the percentages (e.g., more conservative: 20%/40%/60%), add ATR-based trailing, or make Grok suggest the % instead. Or if any part needs tweaking for your style. Happy to refine!

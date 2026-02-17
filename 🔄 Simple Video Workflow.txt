@@ -1,0 +1,17 @@
+🔄 Simple Workflow:
+Run the script:
+
+Files created:
+
+* comfyui_prompts_TIMESTAMP.txt - Copy prompts from here into ComfyUI
+* instagram_video_caption_TIMESTAMP.txt - Ready-made Instagram caption
+* video_strategy_TIMESTAMP.json - Full strategy reference
+
+Manual steps:
+
+1. Run the script to generate prompts
+2. Open ComfyUI Desktop App
+3. Copy/paste the positive and negative prompts
+4. Set to Instagram Reels format (1080x1920)
+5. Generate your video
+6. Upload to Instagram with the generated caption
