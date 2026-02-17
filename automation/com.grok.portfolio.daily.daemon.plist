@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.grok.portfolio.daily</string>
+    <string>com.grok.portfolio.daily.daemon</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -16,6 +16,12 @@
 
     <key>WorkingDirectory</key>
     <string>/Users/khemra/dev/crispy-sniffle</string>
+
+    <key>UserName</key>
+    <string>khemra</string>
+
+    <key>GroupName</key>
+    <string>staff</string>
 
     <key>StartCalendarInterval</key>
     <array>
