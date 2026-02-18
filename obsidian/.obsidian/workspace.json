@@ -11,10 +11,14 @@
             "id": "c1a0348d03608610",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "complete_daily_loop_summary.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "New tab"
+              "title": "complete_daily_loop_summary"
             }
           }
         ]
@@ -177,7 +181,7 @@
       "bases:Create new base": false
     }
   },
-  "active": "c1a0348d03608610",
+  "active": "d8e0f5d801047815",
   "lastOpenFiles": [
     "complete_daily_loop_summary.md",
     "Untitled.md"
