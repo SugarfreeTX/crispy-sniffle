@@ -1,4 +1,4 @@
-Configured (verified 2026-02-17)
+Configured (verified 2026-02-18)
 
 Active scheduler (user):
 - Source plist: /Users/khemra/dev/crispy-sniffle/automation/com.grok.portfolio.daily.plist
@@ -7,12 +7,20 @@ Active scheduler (user):
 - Domain: gui/501 (LaunchAgent)
 - Schedule: Weekdays (Mon-Fri) at 17:15 local time (CST)
 
+Pre-run wake hold (user):
+- Source plist: /Users/khemra/dev/crispy-sniffle/automation/com.grok.portfolio.keepawake.plist
+- Installed plist: ~/Library/LaunchAgents/com.grok.portfolio.keepawake.plist
+- Label: com.grok.portfolio.keepawake
+- Domain: gui/501 (LaunchAgent)
+- Schedule: Weekdays (Mon-Fri) at 17:10 local time (CST)
+- Action: Runs `/usr/bin/caffeinate -d -i -s -t 1500` (keeps Mac awake for 25 minutes)
+
 Power wake schedule:
 - pmset repeat wakeorpoweron MTWRF 17:10:00
 
 Verification:
-- launchctl bootstrap + enable succeeded for label com.grok.portfolio.daily
-- launchctl print shows active calendar triggers for weekday 17:15
+- launchctl bootstrap + enable succeeded for labels `com.grok.portfolio.keepawake` and `com.grok.portfolio.daily`
+- launchctl print shows active calendar triggers for weekday 17:10 and 17:15
 
 System LaunchDaemon:
 - Label com.grok.portfolio.daily.daemon is disabled to avoid duplicate runs
