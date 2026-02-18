@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "83f9f269a54dc229",
+        "id": "f9f3cba37b63b462",
         "type": "tabs",
         "children": [
           {
-            "id": "d28479c556b73e68",
+            "id": "c1a0348d03608610",
             "type": "leaf",
             "state": {
               "type": "empty",
@@ -70,7 +70,8 @@
               "title": "Bookmarks"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -176,6 +177,8 @@
       "bases:Create new base": false
     }
   },
-  "active": "d28479c556b73e68",
-  "lastOpenFiles": []
+  "active": "c1a0348d03608610",
+  "lastOpenFiles": [
+    "Untitled.md"
+  ]
 }
