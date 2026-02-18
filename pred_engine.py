@@ -1,12 +1,14 @@
 import json
 import datetime
 import requests
+import os
+from dotenv import load_dotenv
 
 # ------------------------------------------------------------
 # CONFIGURATION
 # ------------------------------------------------------------
-
-GROK_API_KEY = "YOUR_API_KEY_HERE"
+load_dotenv()  # Load environment variables from .env file
+GROK_API_KEY = os.getenv("GROK_API_KEY")
 GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
 
 # ------------------------------------------------------------
