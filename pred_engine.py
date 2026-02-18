@@ -22,7 +22,7 @@ expiration_date = input("Expiration date (YYYY-MM-DD): ")
 yes_price = float(input("YES price (0.00): "))
 no_price = float(input("NO price (0.00): "))
 
-print("\nEnter relevant data (3–5 bullet points). Type 'done' when finished:")
+print("\nEnter relevant data (3-5 bullet points). Type 'done' when finished:")
 relevant_data = []
 while True:
     item = input("- ")
@@ -51,7 +51,7 @@ packet = {
 
 prompt = f"""
 You are a probability estimation agent.
-Your job is to estimate the probability of a prediction‑market event occurring.
+Your job is to estimate the probability of a prediction-market event occurring.
 
 CRITICAL RULES:
 - You must reason ONLY from the data provided in this prompt.
