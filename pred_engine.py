@@ -56,9 +56,10 @@ Your job is to estimate the probability of a prediction-market event occurring.
 CRITICAL RULES:
 - You must reason ONLY from the data provided in this prompt.
 - Do NOT use outside knowledge, memory, assumptions, or world models.
-- If the provided data is insufficient, state that clearly.
+- If the provided data is insufficient, state that clearly and still give your best estimate with low confidence.
 - Do NOT hallucinate facts, numbers, or events.
 - Keep your reasoning grounded strictly in the inputs below.
+- Estimate your probability INDEPENDENTLY before considering market prices.
 
 ------------------------------------------------------------
 EVENT / CONTRACT
@@ -67,34 +68,45 @@ EVENT / CONTRACT
 RULES SUMMARY
 {contract_rules}
 
+TODAY'S DATE
+{datetime.date.today()}
+
 EXPIRATION DATE
 {expiration_date}
-
-MARKET PRICES
-YES price: {yes_price}
-NO price: {no_price}
 
 RELEVANT DATA
 {json.dumps(relevant_data, indent=2)}
 
 ------------------------------------------------------------
-TASK
-Using ONLY the information above:
-1. Estimate the probability that the event resolves as YES.
-2. Provide a short explanation of the key drivers.
-3. State your confidence level (low, medium, high).
+STEP 1: Using ONLY the event details and relevant data above, estimate the
+probability that this event resolves YES. Think step-by-step before giving
+a number.
+
+STEP 2: Now consider the current market prices:
+YES price: {yes_price}
+NO price: {no_price}
+Assess whether your independent estimate diverges from the market and why.
 
 ------------------------------------------------------------
 OUTPUT FORMAT (follow EXACTLY)
 
-PROBABILITY: <0.00 to 1.00>
-KEY_DRIVERS:
-- <bullet 1>
-- <bullet 2>
-- <bullet 3>
-CONFIDENCE: <low/medium/high>
+REASONING:
+<2-4 sentences of step-by-step analysis>
 
-Do NOT output anything else.
+PROBABILITY: <0.00 to 1.00>
+
+KEY_DRIVERS:
+- <driver 1>
+- <driver 2>
+- <driver 3>
+(add more if needed)
+
+MARKET_DIVERGENCE: <brief note on how your estimate compares to the YES price>
+
+CONFIDENCE: <low | medium | high>
+  low = insufficient data or highly uncertain outcome
+  medium = reasonable data but significant unknowns remain
+  high = strong data clearly pointing in one direction
 """
 
 # ------------------------------------------------------------
@@ -122,16 +134,32 @@ print(grok_output)
 # PARSE GROK OUTPUT
 # ------------------------------------------------------------
 
-def extract_probability(text):
-    for line in text.splitlines():
+def parse_grok_output(text):
+    """Parse structured fields from Grok's response."""
+    result: dict = {"probability": None, "confidence": None, "reasoning": None, "market_divergence": None}
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
         if line.startswith("PROBABILITY:"):
             try:
-                return float(line.split(":")[1].strip())
-            except:
-                return None
-    return None
+                result["probability"] = float(line.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+        elif line.startswith("CONFIDENCE:"):
+            result["confidence"] = line.split(":", 1)[1].strip().lower()
+        elif line.startswith("MARKET_DIVERGENCE:"):
+            result["market_divergence"] = line.split(":", 1)[1].strip()
+        elif line.startswith("REASONING:"):
+            # Collect lines until the next section
+            reasoning_lines = []
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip() == "" or lines[j].startswith(("PROBABILITY:", "KEY_DRIVERS:", "MARKET_DIVERGENCE:", "CONFIDENCE:")):
+                    break
+                reasoning_lines.append(lines[j].strip())
+            result["reasoning"] = " ".join(reasoning_lines)
+    return result
 
-grok_prob = extract_probability(grok_output)
+parsed = parse_grok_output(grok_output)
+grok_prob = parsed["probability"]
 
 if grok_prob is None:
     print("\nERROR: Could not parse probability from Grok output.")
@@ -147,6 +175,12 @@ print("\n--- SUMMARY ---")
 print(f"Grok probability: {grok_prob:.2f}")
 print(f"Market YES price: {yes_price:.2f}")
 print(f"Edge: {edge:+.2f}")
+if parsed["confidence"]:
+    print(f"Confidence: {parsed['confidence']}")
+if parsed["reasoning"]:
+    print(f"Reasoning: {parsed['reasoning']}")
+if parsed["market_divergence"]:
+    print(f"Market divergence: {parsed['market_divergence']}")
 
 if edge > 0:
     print("Suggested action: BUY YES")
@@ -168,6 +202,9 @@ log_entry = {
     "no_price": no_price,
     "grok_probability": grok_prob,
     "edge": edge,
+    "confidence": parsed["confidence"],
+    "reasoning": parsed["reasoning"],
+    "market_divergence": parsed["market_divergence"],
     "raw_output": grok_output
 }
 
