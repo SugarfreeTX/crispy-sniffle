@@ -4,9 +4,10 @@ Your job is to estimate the probability of a prediction‑market event occurring
 CRITICAL RULES:
 - You must reason ONLY from the data provided in this prompt.
 - Do NOT use outside knowledge, memory, assumptions, or world models.
-- If the provided data is insufficient, state that clearly.
+- If the provided data is insufficient, state that clearly and still give your best estimate with low confidence.
 - Do NOT hallucinate facts, numbers, or events.
 - Keep your reasoning grounded strictly in the inputs below.
+- Estimate your probability INDEPENDENTLY before considering market prices.
 
 ------------------------------------------------------------
 EVENT / CONTRACT
@@ -15,12 +16,11 @@ EVENT / CONTRACT
 RULES SUMMARY
 [Paste the contract rules or a short summary]
 
+TODAY'S DATE
+[Paste today's date]
+
 EXPIRATION DATE
 [Paste expiration date]
-
-MARKET PRICES
-YES price: [0.00]
-NO price: [0.00]
 
 RELEVANT DATA (ONLY paste what you have; do NOT invent anything)
 - Last official number or data point:
@@ -32,23 +32,36 @@ RELEVANT DATA (ONLY paste what you have; do NOT invent anything)
 If you do not have data for a category, write "none".
 
 ------------------------------------------------------------
-TASK
-Using ONLY the information above:
-1. Estimate the probability that the event resolves as YES.
-2. Provide a short explanation of the key drivers.
-3. State your confidence level (low, medium, high).
+STEP 1: Using ONLY the event details and relevant data above, estimate the
+probability that this event resolves YES. Think step-by-step before giving
+a number.
+
+STEP 2: Now consider the current market prices:
+YES price: [0.00]
+NO price: [0.00]
+Assess whether your independent estimate diverges from the market and why.
 
 ------------------------------------------------------------
 OUTPUT FORMAT (follow EXACTLY)
 
-PROBABILITY: <0.00 to 1.00>
-KEY_DRIVERS:
-- <bullet 1>
-- <bullet 2>
-- <bullet 3>
-CONFIDENCE: <low/medium/high>
+REASONING:
+<2-4 sentences of step-by-step analysis>
 
-Do NOT output anything else.
+PROBABILITY: <0.00 to 1.00>
+
+KEY_DRIVERS:
+- <driver 1>
+- <driver 2>
+- <driver 3>
+(add more if needed)
+
+MARKET_DIVERGENCE: <brief note on how your estimate compares to the YES price>
+
+CONFIDENCE: <low | medium | high>
+  low = insufficient data or highly uncertain outcome
+  medium = reasonable data but significant unknowns remain
+  high = strong data clearly pointing in one direction
+
 
 
 
