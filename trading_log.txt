@@ -1,0 +1,120 @@
+2026-02-09 18:27:53,814 - INFO - === Starting Daily Trading Loop ===
+2026-02-09 18:27:53,814 - INFO - Starting MSFT data fetch...
+2026-02-09 18:27:53,815 - INFO - No existing portfolio file found, using default portfolio
+2026-02-09 18:27:53,815 - INFO - Saved portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-09 18:27:53,816 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-09 18:27:54,838 - INFO - Successfully fetched MSFT data. Price: $413.60, Volatility: 0.0198
+2026-02-09 18:27:54,838 - INFO - Sending data packet to Grok for analysis...
+2026-02-09 18:27:54,938 - ERROR - Grok API request failed: 403 Client Error: Forbidden for url: https://api.x.ai/v1/chat/completions
+2026-02-09 18:27:54,938 - ERROR - Failed to get response from Grok. Aborting trading loop.
+2026-02-09 18:32:48,069 - INFO - === Starting Daily Trading Loop ===
+2026-02-09 18:32:48,069 - INFO - Starting MSFT data fetch...
+2026-02-09 18:32:48,080 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-09 18:32:48,080 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-09 18:32:48,576 - INFO - Successfully fetched MSFT data. Price: $413.60, Volatility: 0.0198
+2026-02-09 18:32:48,576 - INFO - Sending data packet to Grok for analysis...
+2026-02-09 18:32:48,651 - INFO - Response status code: 403
+2026-02-09 18:32:48,651 - INFO - Response headers: {'Date': 'Tue, 10 Feb 2026 00:32:47 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=9Ul7zjQ468eedu46p8KFWxTXlXlXfJSVWxw880ogJek-1770683567-1.0.1.1-TLlv75zOqej.p26mHjRCvyZjlipxDoT3Z8VECyy_fHVNMN8A.Oa5y9Zp_rGMvFggx8kXX7YBvlPugRVXSLAg1iRdmUUrJ.cM0QZrC.4.nII; path=/; expires=Tue, 10-Feb-26 01:02:47 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9cb782e7be776a3f-DFW'}
+2026-02-09 18:32:48,652 - ERROR - 403 Forbidden error. Response text: {"code":"The caller does not have permission to execute the specified operation","error":"Your newly created team doesn't have any credits or licenses yet. You can purchase those on https://console.x.ai/team/eba7d1f1-2eb4-4373-b2c5-d3955a7fc65e."}
+2026-02-09 18:32:48,652 - ERROR - Grok API request failed: 403 Client Error: Forbidden for url: https://api.x.ai/v1/chat/completions
+2026-02-09 18:32:48,652 - ERROR - Failed to get response from Grok. Aborting trading loop.
+2026-02-09 18:37:41,862 - INFO - === Starting Daily Trading Loop ===
+2026-02-09 18:37:41,863 - INFO - Starting MSFT data fetch...
+2026-02-09 18:37:41,863 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-09 18:37:41,864 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-09 18:37:42,401 - INFO - Successfully fetched MSFT data. Price: $413.60, Volatility: 0.0198
+2026-02-09 18:37:42,401 - INFO - Sending data packet to Grok for analysis...
+2026-02-09 18:38:00,080 - INFO - Response status code: 200
+2026-02-09 18:38:00,080 - INFO - Response headers: {'Date': 'Tue, 10 Feb 2026 00:37:58 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '480', 'x-ratelimit-remaining-requests': '480', 'x-request-id': '00-823f0dd4f6f88e183368b804cbcd319f-50d79aec004afcf3-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=rFDImv10BPxYX6RlPk78PvYTvdCGkY15poxSIyPGkxc-1770683878-1.0.1.1-q.Q6pzzsVqo2yblrzgJgmUIwwgjJomeE_OSWqQA9Wz2TCCXJGM5MI_ZSseyrUitrpSA9MHKwvPYQ17fa0IpvAt7YBtLJt23UmhDwhyy_euw; path=/; expires=Tue, 10-Feb-26 01:07:58 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9cb78a143f87699c-DFW'}
+2026-02-09 18:38:00,081 - INFO - Successfully received response from Grok
+2026-02-09 18:38:00,081 - INFO - Grok response: ACTION: HOLD
+REASON: Overall price trend downward with recent high volatility and sharp drops.
+2026-02-09 18:38:00,081 - INFO - Grok decision: HOLD
+2026-02-09 18:38:00,081 - INFO - Executing action: HOLD | Current portfolio: $100000.00 cash, 0 shares
+2026-02-09 18:38:00,081 - INFO - HOLD — no order placed
+2026-02-09 18:38:00,082 - INFO - === Trading loop completed successfully ===
+2026-02-10 17:02:37,348 - INFO - === Starting Daily Trading Loop ===
+2026-02-10 17:02:37,349 - INFO - Starting MSFT data fetch...
+2026-02-10 17:02:37,350 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-10 17:02:37,350 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-10 17:02:37,928 - INFO - Successfully fetched MSFT data. Price: $413.27, Volatility: 0.0198
+2026-02-10 17:02:37,928 - INFO - Sending data packet to Grok for analysis...
+2026-02-10 17:02:45,720 - INFO - Response status code: 200
+2026-02-10 17:02:45,720 - INFO - Response headers: {'Date': 'Tue, 10 Feb 2026 23:02:45 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '480', 'x-ratelimit-remaining-requests': '480', 'x-request-id': '00-1a6b6e9275464db090258816893aac24-597034fc00080142-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=xv7hcjAkKFwCcSsZxfAAJgLFsbd3zBWj3QbiaXmSZsM-1770764565-1.0.1.1-UNEieDk4OcQzaaYrjdEKkcke3IZd5bN7ce8QZRbiL2ZPmrQy6Xriu508Cr0q3EYog3m4IbgGl8sXCeqS8yyr6eNdEj7LmabUFemsXSUXpQ8; path=/; expires=Tue, 10-Feb-26 23:32:45 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9cbf3c374adaf0b5-DFW'}
+2026-02-10 17:02:45,720 - INFO - Successfully received response from Grok
+2026-02-10 17:02:45,720 - INFO - Grok response: ACTION: HOLD
+REASON: Downward price trend with high volatility and recent sharp drop despite minor rebound.
+2026-02-10 17:02:45,721 - INFO - Grok decision: HOLD
+2026-02-10 17:02:45,721 - INFO - Executing action: HOLD | Current portfolio: $100000.00 cash, 0 shares
+2026-02-10 17:02:45,721 - INFO - HOLD — no order placed
+2026-02-10 17:02:45,721 - INFO - === Trading loop completed successfully ===
+2026-02-11 17:00:24,084 - INFO - === Starting Daily Trading Loop ===
+2026-02-11 17:00:24,085 - INFO - Starting MSFT data fetch...
+2026-02-11 17:00:24,086 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-11 17:00:24,086 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-11 17:00:24,659 - INFO - Successfully fetched MSFT data. Price: $404.37, Volatility: 0.0199, RSI: 34.8, ATR: 16.43 (percentile: 100.0%), Expansion: 1.17x, Regime: Normal, Stop: $371.51, Target: $453.66, Suggested shares: 60
+2026-02-11 17:00:24,659 - INFO - Sending data packet to Grok for analysis...
+2026-02-11 17:00:29,637 - INFO - Response status code: 200
+2026-02-11 17:00:29,637 - INFO - Response headers: {'Date': 'Wed, 11 Feb 2026 23:00:29 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '480', 'x-ratelimit-remaining-requests': '480', 'x-request-id': '00-78925016e3f9d8069155f233a4ed5719-b28f52e9002daba7-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=3RT6Fj.lJE.Y4s9cqfamR2qF88RNIlI2WCiRw13LyYk-1770850829-1.0.1.1-R9u_EzEKquPdHQoK2Xa3Jfexo.lx3Qq7r7.CRBP6HSeCoWvJM5VGTGxIkFrwG85GCdmgFsO._aGFpLm35VDBB3P32cQXcnyyav8ENUxK.sk; path=/; expires=Wed, 11-Feb-26 23:30:29 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9cc776544daee7c7-DFW'}
+2026-02-11 17:00:29,637 - INFO - Successfully received response from Grok
+2026-02-11 17:00:29,638 - INFO - Grok response: ACTION: HOLD  
+REASON: ATR (16.43) exceeds max_atr (15.0), indicating extreme volatility conditions requiring no trade.
+2026-02-11 17:00:29,638 - INFO - Grok decision: HOLD - ATR (16.43) exceeds max_atr (15.0), indicating extreme volatility conditions requiring no trade.
+2026-02-11 17:00:29,638 - INFO - Executing action: HOLD | Current portfolio: $100000.00 cash, 0 shares, Equity: $100000.00, Drawdown: 0.00%
+2026-02-11 17:00:29,638 - INFO - HOLD — no order placed
+2026-02-11 17:00:29,639 - INFO - Logged trade: HOLD 0 shares at $404.37
+2026-02-11 17:00:29,639 - INFO - === Trading loop completed successfully ===
+2026-02-12 17:32:46,694 - INFO - === Starting Daily Trading Loop ===
+2026-02-12 17:32:46,695 - INFO - Market expected open today (weekday + not holiday)
+2026-02-12 17:32:46,696 - INFO - Starting MSFT data fetch...
+2026-02-12 17:32:46,705 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-12 17:32:46,706 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-12 17:32:47,297 - INFO - Data fresh: Last bar 2026-02-12
+2026-02-12 17:32:47,306 - INFO - Successfully fetched MSFT data. Price: $401.84, RSI: 27.3, ATR: 15.54, Regime: Normal, Suggested shares: 64, Rel Vol: 0.87 (Latest Vol: 39706158, Avg 20d: 45436582)
+2026-02-12 17:32:47,306 - INFO - Sending data packet to Grok for analysis...
+2026-02-12 17:32:50,074 - INFO - Response status code: 200
+2026-02-12 17:32:50,074 - INFO - Response headers: {'Date': 'Thu, 12 Feb 2026 23:32:50 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '607', 'x-ratelimit-remaining-requests': '607', 'x-metrics-e2e-ms': '2598.6', 'x-request-id': '00-4b3e93583c703ef039de3ad5b359e510-383e0f1e000d244c-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=jIGIhcVsxhvT6bntIIUMXhXn8ajdT4Dr1mi07MgtGfg-1770939170-1.0.1.1-uQOWepaGoKPrWpkb5mzjpJINwiiGf3C67Y0qSD24spKUhqd10jJpvLpfRYSqtjmT.b5zpedCboLnmNtbA5m3S.oAUruuNBZ.fr3Pl8ipMBQ; path=/; expires=Fri, 13-Feb-26 00:02:50 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9ccfe3243f6ea619-DFW'}
+2026-02-12 17:32:50,074 - INFO - Successfully received response from Grok
+2026-02-12 17:32:50,075 - INFO - Grok response: ACTION: HOLD
+REASON: Trend label is "Insufficient data", default to HOLD regardless of oversold RSI.
+2026-02-12 17:32:50,075 - INFO - Grok decision: HOLD - Trend label is "Insufficient data", default to HOLD regardless of oversold RSI.
+2026-02-12 17:32:50,076 - INFO - Executing action: HOLD | Current portfolio: $100000.00 cash, 0 shares, Equity: $100000.00, Drawdown: 0.00%
+2026-02-12 17:32:50,076 - INFO - Holding position: HOLD - Trend label is "Insufficient data", default to HOLD regardless of oversold RSI.
+2026-02-12 17:32:50,087 - INFO - Logged trade: HOLD 0 shares at $401.84
+2026-02-12 17:32:50,088 - INFO - === Trading loop completed successfully ===
+2026-02-13 17:00:51,666 - INFO - === Starting Daily Trading Loop ===
+2026-02-13 17:00:51,667 - INFO - Market expected open today (weekday + not holiday)
+2026-02-13 17:00:51,668 - INFO - Starting MSFT data fetch...
+2026-02-13 17:00:51,676 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-13 17:00:51,677 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-13 17:00:52,315 - INFO - Data fresh: Last bar 2026-02-13
+2026-02-13 17:00:52,324 - INFO - Successfully fetched MSFT data. Price: $401.32, RSI: 24.9, ATR: 15.2, Regime: Normal, Suggested shares: 65, Rel Vol: 0.73 (Latest Vol: 33811314, Avg 20d: 46020670)
+2026-02-13 17:00:52,324 - INFO - Sending data packet to Grok for analysis...
+2026-02-13 17:00:52,325 - ERROR - Unexpected error in main trading loop: Object of type bool is not JSON serializable
+2026-02-13 17:00:58,681 - INFO - === Starting Daily Trading Loop ===
+2026-02-13 17:00:58,682 - INFO - Market expected open today (weekday + not holiday)
+2026-02-13 17:00:58,683 - INFO - Starting MSFT data fetch...
+2026-02-13 17:00:58,684 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-13 17:00:58,684 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-13 17:00:59,242 - INFO - Data fresh: Last bar 2026-02-13
+2026-02-13 17:00:59,248 - INFO - Successfully fetched MSFT data. Price: $401.32, RSI: 24.9, ATR: 15.2, Regime: Normal, Suggested shares: 65, Rel Vol: 0.73 (Latest Vol: 33811314, Avg 20d: 46020670)
+2026-02-13 17:00:59,248 - INFO - Sending data packet to Grok for analysis...
+2026-02-13 17:00:59,249 - ERROR - Unexpected error in main trading loop: Object of type bool is not JSON serializable
+2026-02-13 17:03:27,323 - INFO - === Starting Daily Trading Loop ===
+2026-02-13 17:03:27,324 - INFO - Market expected open today (weekday + not holiday)
+2026-02-13 17:03:27,326 - INFO - Starting MSFT data fetch...
+2026-02-13 17:03:27,327 - INFO - Loaded portfolio state: {'cash': 100000.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-09 18:27:53'}
+2026-02-13 17:03:27,327 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-13 17:03:27,922 - INFO - Data fresh: Last bar 2026-02-13
+2026-02-13 17:03:27,928 - INFO - Successfully fetched MSFT data. Price: $401.32, RSI: 24.9, ATR: 15.2, Regime: Normal, Suggested shares: 65, Rel Vol: 0.73 (Latest Vol: 33811314, Avg 20d: 46020670)
+2026-02-13 17:03:27,928 - INFO - Sending data packet to Grok for analysis...
+2026-02-13 17:03:31,539 - INFO - Response status code: 200
+2026-02-13 17:03:31,540 - INFO - Response headers: {'Date': 'Fri, 13 Feb 2026 23:03:31 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '607', 'x-ratelimit-remaining-requests': '607', 'x-metrics-e2e-ms': '3498.9', 'x-request-id': '00-42a80c58087491f7ceb16481a9a60600-3c198afe00143617-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=IyagrnoA.VG6ZIrl6qnOkt1ALUd.vNMVapjdMKMaT5I-1771023811-1.0.1.1-DI_iMG0qjMeeE92NyXDq4CRlI1o5dv8sdOBF0LpDTMIFvmlFWvnSrgWufWsMhjWzjHidC32rqqnemHJ4uqYkh.oELRn.pEdd3b2qKpp4Fo0; path=/; expires=Fri, 13-Feb-26 23:33:31 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9cd7f58ded945212-DFW'}
+2026-02-13 17:03:31,540 - INFO - Successfully received response from Grok
+2026-02-13 17:03:31,541 - INFO - Grok response: ACTION: HOLD
+REASON: Bearish trend label prioritized over oversold RSI (24.9) as relative volume (0.73) below 1.2 and RSI not below 20.
+2026-02-13 17:03:31,541 - INFO - Grok decision: HOLD - Bearish trend label prioritized over oversold RSI (24.9) as relative volume (0.73) below 1.2 and RSI not below 20.
+2026-02-13 17:03:31,541 - INFO - Executing action: HOLD | Current portfolio: $100000.00 cash, 0 shares, Equity: $100000.00, Drawdown: 0.00%
+2026-02-13 17:03:31,541 - INFO - Holding position: HOLD - Bearish trend label prioritized over oversold RSI (24.9) as relative volume (0.73) below 1.2 and RSI not below 20.
+2026-02-13 17:03:31,552 - INFO - Logged trade: HOLD 0 shares at $401.32
+2026-02-13 17:03:31,552 - INFO - === Trading loop completed successfully ===
