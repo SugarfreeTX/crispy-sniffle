@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import requests
 import logging
 import os
+import signal
+import sys
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 import pandas_market_calendars as mcal
@@ -31,6 +33,42 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def _install_signal_logging() -> None:
+    """Log termination-style signals so we can diagnose unexpected exits.
+
+    VS Code and other runners may send signals (SIGINT/SIGTERM) when stopping or
+    restarting a run session.
+    """
+
+    def _handler(signum: int, _frame) -> None:
+        try:
+            sig_name = signal.Signals(signum).name
+        except Exception:
+            sig_name = str(signum)
+
+        logger.warning(
+            "Signal received: %s (%s) | pid=%s ppid=%s | TERM_PROGRAM=%s VSCODE_PID=%s",
+            signum,
+            sig_name,
+            os.getpid(),
+            os.getppid(),
+            os.getenv("TERM_PROGRAM"),
+            os.getenv("VSCODE_PID"),
+        )
+
+    for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _handler)
+        except Exception:
+            # Some signals can't be trapped in some contexts.
+            continue
+
+
+_install_signal_logging()
 
 # Portfolio state file
 PORTFOLIO_FILE = "portfolio_state.json"
@@ -911,9 +949,16 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
             logger.info("=== Trading loop completed successfully ===")
         else:
             logger.error("=== Trading loop completed with errors ===")
+
+    except KeyboardInterrupt:
+        # This is almost always a SIGINT from the terminal/IDE (e.g., VS Code re-run/stop).
+        # Log it explicitly so it doesn't look like a mysterious crash.
+        logger.warning("KeyboardInterrupt (SIGINT) received; exiting early.")
+        return
             
     except Exception as e:
-        logger.error(f"Unexpected error in main trading loop: {e}")
+        # Use logger.exception to include the full traceback in logs for post-mortems.
+        logger.exception("Unexpected error in main trading loop")
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run daily MSFT trading loop")

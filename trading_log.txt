@@ -118,3 +118,72 @@ REASON: Bearish trend label prioritized over oversold RSI (24.9) as relative vol
 2026-02-13 17:03:31,541 - INFO - Holding position: HOLD - Bearish trend label prioritized over oversold RSI (24.9) as relative volume (0.73) below 1.2 and RSI not below 20.
 2026-02-13 17:03:31,552 - INFO - Logged trade: HOLD 0 shares at $401.32
 2026-02-13 17:03:31,552 - INFO - === Trading loop completed successfully ===
+2026-02-19 17:21:21,048 - INFO - === Starting Daily Trading Loop ===
+2026-02-19 17:21:21,115 - INFO - Market expected open today (NYSE session found)
+2026-02-19 17:21:21,115 - INFO - Starting MSFT data fetch...
+2026-02-19 17:21:21,116 - INFO - Loaded portfolio state: {'cash': 80179.0, 'shares': 50, 'cost_basis': 396.42, 'last_updated': '2026-02-17 14:41:00', 'peak_value': 100000.0}
+2026-02-19 17:21:21,116 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-19 17:21:21,378 - INFO - Data fresh: Last bar 2026-02-19
+2026-02-19 17:21:21,382 - INFO - Successfully fetched MSFT data. Price: $398.46, RSI: 29.7, ATR: 11.05, Regime: Normal, Suggested shares: 72, Rel Vol: 0.62 (Latest Vol: 27956029, Avg 20d: 45279736)
+2026-02-19 17:21:21,382 - INFO - Sending data packet to Grok for analysis...
+2026-02-19 17:21:28,546 - INFO - === Starting Daily Trading Loop ===
+2026-02-19 17:21:28,618 - INFO - Market expected open today (NYSE session found)
+2026-02-19 17:21:28,618 - INFO - Starting MSFT data fetch...
+2026-02-19 17:21:28,619 - INFO - Loaded portfolio state: {'cash': 80179.0, 'shares': 50, 'cost_basis': 396.42, 'last_updated': '2026-02-17 14:41:00', 'peak_value': 100000.0}
+2026-02-19 17:21:28,619 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-19 17:21:28,909 - INFO - Data fresh: Last bar 2026-02-19
+2026-02-19 17:21:28,914 - INFO - Successfully fetched MSFT data. Price: $398.46, RSI: 29.7, ATR: 11.05, Regime: Normal, Suggested shares: 72, Rel Vol: 0.62 (Latest Vol: 27956029, Avg 20d: 45279736)
+2026-02-19 17:21:28,914 - INFO - Sending data packet to Grok for analysis...
+2026-02-19 17:21:41,190 - INFO - Response status code: 200
+2026-02-19 17:21:41,190 - INFO - Response headers: {'Date': 'Thu, 19 Feb 2026 23:21:41 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '607', 'x-ratelimit-remaining-requests': '607', 'x-metrics-ttft-ms': '225.0', 'x-metrics-mean-itl-ms': '10.7', 'x-metrics-e2e-ms': '12130.9', 'x-request-id': '00-e0ae831c7298d95a4e103cbd96b35d78-eaabd6200004957f-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=unqZiizTQKldI22ik8WwrsUhVtzO0AsyGSktY5B_PoU-1771543301-1.0.1.1-wc3HMDkmWIJWfKCaPpqtl_JvYmoR_GYBKTTK4m.QdHmEut6gBdIBSLUzBAhUxunt4bZBN1JMwAT1B6A_t_hoodDFiGPKDZ2hsTJ0CuFotzc; path=/; expires=Thu, 19-Feb-26 23:51:41 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9d098033fdb5e997-DFW'}
+2026-02-19 17:21:41,190 - INFO - Successfully received response from Grok
+2026-02-19 17:21:41,191 - INFO - Grok response: ACTION: SELL
+REASON: Bearish trend below SMAs with low RSI but prioritize trend for full exit of small unrealized gain position.
+2026-02-19 17:21:41,191 - INFO - Grok decision: SELL - Bearish trend below SMAs with low RSI but prioritize trend for full exit of small unrealized gain position.
+2026-02-19 17:21:41,191 - INFO - Executing action: SELL | Current portfolio: $80179.00 cash, 50 shares, Equity: $100102.00, Drawdown: 0.00%
+2026-02-19 17:21:41,192 - INFO - SELL decision: Unrealized PnL 0.51%, Trend: Bearish (below 50 SMA), Selling 100% → 50 shares
+2026-02-19 17:21:41,192 - INFO - Placing SELL order for 50 shares of MSFT
+2026-02-19 17:21:41,578 - INFO - Order placed successfully. Order ID: 340e43d1-ab18-4e8f-a63e-aeba82f94800
+2026-02-19 17:21:41,579 - INFO - Loaded portfolio state: {'cash': 80179.0, 'shares': 50, 'cost_basis': 396.42, 'last_updated': '2026-02-17 14:41:00', 'peak_value': 100000.0}
+2026-02-19 17:21:41,581 - INFO - Saved portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0}
+2026-02-19 17:21:41,582 - INFO - Logged trade: SELL_FULL 50 shares at $398.46
+2026-02-19 17:21:41,582 - INFO - SELL executed: 50 shares (100%) at $398.46. Realized P&L: $102.00. Remaining shares: 0
+2026-02-19 17:21:41,582 - INFO - === Trading loop completed successfully ===
+2026-02-19 17:35:04,481 - INFO - === Starting Daily Trading Loop ===
+2026-02-19 17:35:04,481 - INFO - DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.
+2026-02-19 17:35:04,549 - INFO - Market expected open today (NYSE session found)
+2026-02-19 17:35:04,550 - INFO - Starting MSFT data fetch...
+2026-02-19 17:35:04,550 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0}
+2026-02-19 17:35:04,550 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-19 17:35:04,848 - INFO - Data fresh: Last bar 2026-02-19
+2026-02-19 17:35:04,855 - INFO - Successfully fetched MSFT data. Price: $398.46, RSI: 29.7, ATR: 11.05, Regime: Normal, Suggested shares: 90, Rel Vol: 0.62 (Latest Vol: 27956029, Avg 20d: 45279736)
+2026-02-19 17:35:04,855 - INFO - Sending data packet to Grok for analysis...
+2026-02-19 17:35:10,162 - INFO - Response status code: 200
+2026-02-19 17:35:10,162 - INFO - Response headers: {'Date': 'Thu, 19 Feb 2026 23:35:10 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '607', 'x-ratelimit-remaining-requests': '607', 'x-metrics-ttft-ms': '144.2', 'x-metrics-mean-itl-ms': '6.3', 'x-metrics-e2e-ms': '5187.4', 'x-request-id': '00-84512e0a33b9d13dc45befad1acb499c-10cdaf8500071323-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=M1RwUM_iYgUlRtZoozqVSyS6sLZ1d_9.h4waYjKQn6U-1771544110-1.0.1.1-HXgjyPaQPyIaoGUOyh1gb5ot3CItwIVojxi8jfkWf.C1tzKhEWmP6PBjJMrxZITzyu_sN5W6SAe2BnxH4mYVcn2BOQKJIPrwDas52i9fPpc; path=/; expires=Fri, 20-Feb-26 00:05:10 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9d09941faf363449-DFW'}
+2026-02-19 17:35:10,163 - INFO - Successfully received response from Grok
+2026-02-19 17:35:10,163 - INFO - Grok response: ACTION: HOLD
+REASON: Bearish trend label with price below both SMAs and RSI not extremely oversold prioritizes caution despite low RSI.
+2026-02-19 17:35:10,163 - INFO - Grok decision: HOLD - Bearish trend label with price below both SMAs and RSI not extremely oversold prioritizes caution despite low RSI.
+2026-02-19 17:35:10,163 - INFO - Executing action: HOLD | Current portfolio: $100102.00 cash, 0 shares, Equity: $100102.00, Drawdown: 0.00%
+2026-02-19 17:35:10,163 - INFO - Holding position: HOLD - Bearish trend label with price below both SMAs and RSI not extremely oversold prioritizes caution despite low RSI.
+2026-02-19 17:35:10,163 - INFO - DRY-RUN HOLD: No trade, no portfolio mutation
+2026-02-19 17:35:10,163 - INFO - === Trading loop completed successfully ===
+2026-02-19 17:41:12,975 - INFO - === Starting Daily Trading Loop ===
+2026-02-19 17:41:12,975 - INFO - DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.
+2026-02-19 17:41:13,041 - INFO - Market expected open today (NYSE session found)
+2026-02-19 17:41:13,041 - INFO - Starting MSFT data fetch...
+2026-02-19 17:41:13,041 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0}
+2026-02-19 17:41:13,041 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-19 17:41:13,301 - INFO - Data fresh: Last bar 2026-02-19
+2026-02-19 17:41:13,304 - INFO - Successfully fetched MSFT data. Price: $398.46, RSI: 29.7, ATR: 11.05, Regime: Normal, Suggested shares: 90, Rel Vol: 0.62 (Latest Vol: 27956029, Avg 20d: 45279736)
+2026-02-19 17:41:13,304 - INFO - Sending data packet to Grok for analysis...
+2026-02-19 17:41:19,118 - INFO - Response status code: 200
+2026-02-19 17:41:19,118 - INFO - Response headers: {'Date': 'Thu, 19 Feb 2026 23:41:19 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '607', 'x-ratelimit-remaining-requests': '607', 'x-metrics-ttft-ms': '152.3', 'x-metrics-mean-itl-ms': '9.4', 'x-metrics-e2e-ms': '5629.0', 'x-request-id': '00-277037f264db30281f0d9df8e5ccac96-5620fb4800079e25-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=Qumyy7yCivNbmevHmfaIqsaNw3K0DA6ZQCgxanRU1tQ-1771544479-1.0.1.1-ETUbK38rkejbeolTqMc3Ly1rn1Ep4fjbcN8SjtKjgp5Vfq8pulE1KQQZ5y38U6ad5nIsQIPCCGn5DTLB0WISRN6mYqksXOPt6gaCIXqiF00; path=/; expires=Fri, 20-Feb-26 00:11:19 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9d099d1e7b1bf81d-DFW'}
+2026-02-19 17:41:19,119 - INFO - Successfully received response from Grok
+2026-02-19 17:41:19,119 - INFO - Grok response: ACTION: HOLD
+REASON: Bearish trend with price below 50/200 SMAs, RSI not extremely oversold (<25), and low relative volume.
+2026-02-19 17:41:19,119 - INFO - Grok decision: HOLD - Bearish trend with price below 50/200 SMAs, RSI not extremely oversold (<25), and low relative volume.
+2026-02-19 17:41:19,119 - INFO - Executing action: HOLD | Current portfolio: $100102.00 cash, 0 shares, Equity: $100102.00, Drawdown: 0.00%
+2026-02-19 17:41:19,119 - INFO - Holding position: HOLD - Bearish trend with price below 50/200 SMAs, RSI not extremely oversold (<25), and low relative volume.
+2026-02-19 17:41:19,120 - INFO - DRY-RUN HOLD: No trade, no portfolio mutation
+2026-02-19 17:41:19,120 - INFO - === Trading loop completed successfully ===
