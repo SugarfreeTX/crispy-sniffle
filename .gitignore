@@ -220,3 +220,5 @@ __marimo__/
 #pred_engine
 pred_engine.py
 template/
+
+trading_log.txt
