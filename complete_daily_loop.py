@@ -36,11 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 def _install_signal_logging() -> None:
-    """Log termination-style signals so we can diagnose unexpected exits.
-
-    VS Code and other runners may send signals (SIGINT/SIGTERM) when stopping or
-    restarting a run session.
-    """
+    """Log signals and allow default termination behavior."""
 
     def _handler(signum: int, _frame) -> None:
         try:
@@ -49,23 +45,22 @@ def _install_signal_logging() -> None:
             sig_name = str(signum)
 
         logger.warning(
-            "Signal received: %s (%s) | pid=%s ppid=%s | TERM_PROGRAM=%s VSCODE_PID=%s",
-            signum,
-            sig_name,
-            os.getpid(),
-            os.getppid(),
-            os.getenv("TERM_PROGRAM"),
-            os.getenv("VSCODE_PID"),
+            "Signal received: %s (%s) | pid=%s ppid=%s | TERM_PROGRAM=%s",
+            signum, sig_name, os.getpid(), os.getppid(),
+            os.getenv("TERM_PROGRAM")
         )
 
-    for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
-        if sig is None:
-            continue
-        try:
-            signal.signal(sig, _handler)
-        except Exception:
-            # Some signals can't be trapped in some contexts.
-            continue
+        # For SIGTERM / SIGHUP: log → then let default action terminate us
+        # For SIGINT: raise KeyboardInterrupt so main() catches it (though rare in launchd)
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        if sig is not None:
+            try:
+                signal.signal(sig, _handler)
+            except Exception:
+                continue
 
 
 _install_signal_logging()
