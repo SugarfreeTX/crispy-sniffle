@@ -61,6 +61,9 @@
         </dict>
     </array>
 
+    <key>ExitTimeOut</key>
+    <integer>60</integer>  <!-- or 120 if trades can take longer -->
+
     <key>RunAtLoad</key>
     <false/>
 

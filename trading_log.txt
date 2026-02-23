@@ -187,3 +187,21 @@ REASON: Bearish trend with price below 50/200 SMAs, RSI not extremely oversold (
 2026-02-19 17:41:19,119 - INFO - Holding position: HOLD - Bearish trend with price below 50/200 SMAs, RSI not extremely oversold (<25), and low relative volume.
 2026-02-19 17:41:19,120 - INFO - DRY-RUN HOLD: No trade, no portfolio mutation
 2026-02-19 17:41:19,120 - INFO - === Trading loop completed successfully ===
+2026-02-20 17:15:05,624 - INFO - === Starting Daily Trading Loop ===
+2026-02-20 17:15:05,690 - INFO - Market expected open today (NYSE session found)
+2026-02-20 17:15:05,690 - INFO - Starting MSFT data fetch...
+2026-02-20 17:15:05,690 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0}
+2026-02-20 17:15:05,690 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-20 17:15:06,020 - INFO - Data fresh: Last bar 2026-02-20
+2026-02-20 17:15:06,028 - INFO - Successfully fetched MSFT data. Price: $397.23, RSI: 30.4, ATR: 10.46, Regime: Normal, Suggested shares: 95, Rel Vol: 0.70 (Latest Vol: 31825617, Avg 20d: 45617445)
+2026-02-20 17:15:06,028 - INFO - Sending data packet to Grok for analysis...
+2026-02-20 17:15:10,634 - INFO - Response status code: 200
+2026-02-20 17:15:10,634 - INFO - Response headers: {'Date': 'Fri, 20 Feb 2026 23:15:10 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '607', 'x-ratelimit-remaining-requests': '607', 'x-metrics-ttft-ms': '119.2', 'x-metrics-mean-itl-ms': '6.2', 'x-metrics-e2e-ms': '4395.8', 'x-request-id': '00-23b7622a1044d61eae3638c3052536f5-5c6e95d8000c96cd-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=1TidJbTvgc03eYH1XRgIoCo0xAOK91TMewLb7YwKeb8-1771629310-1.0.1.1-JaXmH10CJIXFgE6113vAsg2u61tTvwP5Z3b1x4MA6l2g21mEBClvAV_KOv9wxCCxQTj8QpBnQmH4lNpDrrAarF0xomPcoWVaKnGfcHoSgZE; path=/; expires=Fri, 20-Feb-26 23:45:10 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9d11b43b1b34f0bc-DFW'}
+2026-02-20 17:15:10,635 - INFO - Successfully received response from Grok
+2026-02-20 17:15:10,635 - INFO - Grok response: ACTION: HOLD
+REASON: Bearish trend label with price below both SMAs and RSI not extremely oversold (<25) despite low reading.
+2026-02-20 17:15:10,635 - INFO - Grok decision: HOLD - Bearish trend label with price below both SMAs and RSI not extremely oversold (<25) despite low reading.
+2026-02-20 17:15:10,635 - INFO - Executing action: HOLD | Current portfolio: $100102.00 cash, 0 shares, Equity: $100102.00, Drawdown: 0.00%
+2026-02-20 17:15:10,635 - INFO - Holding position: HOLD - Bearish trend label with price below both SMAs and RSI not extremely oversold (<25) despite low reading.
+2026-02-20 17:15:10,638 - INFO - Logged trade: HOLD 0 shares at $397.23
+2026-02-20 17:15:10,638 - INFO - === Trading loop completed successfully ===

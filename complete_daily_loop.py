@@ -225,21 +225,16 @@ def is_market_open() -> bool:
     """Check if NYSE is scheduled to trade today (year-safe weekend + holiday handling)."""
     now = datetime.now()
 
-    # Fast path for weekends
-    if now.weekday() >= 5:  # Sat (5) or Sun (6)
-        logger.info("Market closed: Weekend")
+    if now.weekday() >= 5:
+            logger.info("Market closed: Weekend")
+            return False
+    try:
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(start_date=now.date(), end_date=now.date())
+        return not schedule.empty
+    except Exception as e:
+        logger.warning(f"Market calendar check failed: {e}. Assuming closed for safety.")
         return False
-    
-    today_date = now.date()
-    nyse = mcal.get_calendar("NYSE")
-    schedule = nyse.schedule(start_date=today_date, end_date=today_date)
-
-    if schedule.empty:
-        logger.info(f"Market closed: NYSE has no session on {today_date.strftime('%Y-%m-%d')}")
-        return False
-
-    logger.info("Market expected open today (NYSE session found)")
-    return True
 
 def calculate_portfolio_metrics(portfolio: Dict[str, Any], current_price: float) -> Dict[str, Any]:
     """Calculate comprehensive portfolio metrics including P&L and drawdown"""
