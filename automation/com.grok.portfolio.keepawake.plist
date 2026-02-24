@@ -12,7 +12,7 @@
         <string>-i</string>
         <string>-s</string>
         <string>-t</string>
-        <string>1500</string>
+        <string>1200</string>
     </array>
 
     <key>WorkingDirectory</key>

@@ -205,3 +205,20 @@ REASON: Bearish trend label with price below both SMAs and RSI not extremely ove
 2026-02-20 17:15:10,635 - INFO - Holding position: HOLD - Bearish trend label with price below both SMAs and RSI not extremely oversold (<25) despite low reading.
 2026-02-20 17:15:10,638 - INFO - Logged trade: HOLD 0 shares at $397.23
 2026-02-20 17:15:10,638 - INFO - === Trading loop completed successfully ===
+2026-02-23 17:15:05,721 - INFO - === Starting Daily Trading Loop ===
+2026-02-23 17:15:05,788 - INFO - Starting MSFT data fetch...
+2026-02-23 17:15:05,788 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0}
+2026-02-23 17:15:05,788 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-23 17:15:06,054 - INFO - Data fresh: Last bar 2026-02-23
+2026-02-23 17:15:06,064 - INFO - Successfully fetched MSFT data. Price: $384.47, RSI: 28.7, ATR: 10.85, Regime: Normal, Suggested shares: 92, Rel Vol: 0.93 (Latest Vol: 42920481, Avg 20d: 45970179)
+2026-02-23 17:15:06,064 - INFO - Sending data packet to Grok for analysis...
+2026-02-23 17:15:12,293 - INFO - Response status code: 200
+2026-02-23 17:15:12,293 - INFO - Response headers: {'Date': 'Mon, 23 Feb 2026 23:15:12 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'Content-Encoding': 'gzip', 'x-ratelimit-limit-tokens': '4000000', 'x-ratelimit-remaining-tokens': '4000000', 'x-zero-data-retention': 'false', 'x-ratelimit-limit-requests': '607', 'x-ratelimit-remaining-requests': '607', 'x-metrics-ttft-ms': '136.7', 'x-metrics-mean-itl-ms': '7.5', 'x-metrics-e2e-ms': '6026.2', 'x-request-id': '00-99c3a27d3a772239620cfadd5c282e3e-b5399a8d000438dc-01', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=3FNwKMdnZMoKTg_tmt74d2zf8wYzRmqTwUL_JaF2e5M-1771888512-1.0.1.1-t5hL9amzo8P47jYu13aRKGiCUF00rfYnZfn5NfGQEqplfgaBaeH_uioqRZWTjNMVKmPCkS2INADV4ZFEF73IzuqnfceqKFmDj8lkfNO7obk; path=/; expires=Mon, 23-Feb-26 23:45:12 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None', 'Strict-Transport-Security': 'max-age=31536000', 'Server': 'cloudflare', 'CF-RAY': '9d2a6c5b5cd6f08d-DFW'}
+2026-02-23 17:15:12,293 - INFO - Successfully received response from Grok
+2026-02-23 17:15:12,294 - INFO - Grok response: ACTION: HOLD
+REASON: Bearish trend label prioritized over oversold RSI (28.7) as RSI not extreme and relative volume below 1.2.
+2026-02-23 17:15:12,294 - INFO - Grok decision: HOLD - Bearish trend label prioritized over oversold RSI (28.7) as RSI not extreme and relative volume below 1.2.
+2026-02-23 17:15:12,294 - INFO - Executing action: HOLD | Current portfolio: $100102.00 cash, 0 shares, Equity: $100102.00, Drawdown: 0.00%
+2026-02-23 17:15:12,294 - INFO - Holding position: HOLD - Bearish trend label prioritized over oversold RSI (28.7) as RSI not extreme and relative volume below 1.2.
+2026-02-23 17:15:12,297 - INFO - Logged trade: HOLD 0 shares at $384.47
+2026-02-23 17:15:12,297 - INFO - === Trading loop completed successfully ===

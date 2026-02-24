@@ -216,6 +216,7 @@ __marimo__/
 
 #obsidian
 .obsidian/workspace.json
+obsidian/
 
 #pred_engine
 pred_engine.py
