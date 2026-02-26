@@ -146,8 +146,8 @@ env.bak/
 venv.bak/
 
 # Logs that contain API keys or credentials
-# trading_log.txt
 trade_history.json
+trading_log.txt
 
 # back up functions 
 modules/
@@ -221,5 +221,3 @@ obsidian/
 #pred_engine
 pred_engine.py
 template/
-
-trading_log.txt

@@ -3,5 +3,7 @@
   "shares": 0,
   "cost_basis": 0.0,
   "last_updated": "2026-02-19 17:21:41",
-  "peak_value": 100102.0
+  "peak_value": 100102.0,
+  "last_regime": "Normal",
+  "regime_days_in_state": 3
 }
