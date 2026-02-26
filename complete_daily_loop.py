@@ -129,13 +129,18 @@ def load_portfolio_state() -> Dict[str, Any]:
         "cost_basis": 0.00,
         "initial_capital": 100000.00,
         "peak_value": 100000.00,
-        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_regime": "Normal",
+        "regime_days_in_state": 1,
     }
     
     try:
         if os.path.exists(PORTFOLIO_FILE):
             with open(PORTFOLIO_FILE, "r") as f:
                 portfolio = json.load(f)
+                # Ensure new fields exist (for old saved states)
+                portfolio.setdefault("last_regime", "Normal")
+                portfolio.setdefault("regime_days_in_state", 1)
                 logger.info(f"Loaded portfolio state: {portfolio}")
                 return portfolio
         else:
@@ -209,7 +214,9 @@ def has_executed_trade_today() -> bool:
             trade_history = json.load(f)
 
         today_str = datetime.now().strftime("%Y-%m-%d")
-        executed_actions = {"BUY", "SELL", "SELL_PARTIAL", "SELL_FULL"}
+        
+        # Only include actions that are actually logged for executed orders
+        executed_actions = {"BUY", "SELL_PARTIAL", "SELL_FULL"}
 
         for trade in reversed(trade_history):
             timestamp = str(trade.get("timestamp", ""))
@@ -264,6 +271,49 @@ def calculate_portfolio_metrics(portfolio: Dict[str, Any], current_price: float)
         "peak_value": round(new_peak, 2),
         "current_drawdown_pct": round(current_drawdown, 2)
     }
+    
+def should_auto_hold(packet: Dict[str, Any]) -> bool:
+    """Quick local check: if conditions strongly suggest HOLD, skip Grok call."""
+    if packet is None:
+        return False  # Let it fail normally if no packet
+
+    md = packet.get("market_data", {})
+    port = packet.get("portfolio", {})
+    constr = packet.get("constraints", {})
+
+    rsi = md.get("rsi_14", 50.0)
+    regime = md.get("market_regime", "Normal")
+    rel_vol = md.get("relative_volume", 1.0)
+    drawdown_pct = port.get("current_drawdown_pct", 0.0)
+    trend_label = md.get("trend_label", "Neutral")
+    regime_changed = md.get("regime_changed_today", False)
+
+    # Rule 1: Neutral zone – most common auto-hold case
+    if (35 <= rsi <= 65 and
+        regime == "Normal" and
+        rel_vol <= 1.3 and
+        not regime_changed):
+        return True
+    print(f"Neutral RSI + regime + volume")
+
+    # Rule 2: Drawdown protection – avoid adding risk
+    max_dd_warning = 6.0  # trigger early, before your 10% hard block
+    if drawdown_pct >= max_dd_warning:
+        return True
+    print(f"Drawdown at {drawdown_pct:.2f}% - approaching max drawdown limit, prefer HOLD")
+
+    # Rule 3: Bullish but not oversold enough to justify buy
+    if "Bullish" in trend_label and rsi >= 58:  # not deep enough dip
+        return True 
+    print(f"Bullish trend but RSI not low enough for entry")
+
+    # Rule 4: Bearish but not overbought enough for exit
+    if "Bearish" in trend_label and rsi <= 42:
+        return True 
+    print(f"Bearish trend but RSI not high enough for exit")
+
+    # Add more rules as you observe dry-runs (e.g. ATR too low/high)
+    return False # Proceed to Grok
 
 def fetch_msft_daily() -> Optional[Dict[str, Any]]:
     """Fetch MSFT market data and build trading packet with current portfolio state"""
@@ -350,6 +400,17 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
             regime = "Normal"
             regime_multiplier = 1.0  # Normal position sizing
         
+        # ── Regime persistence logic ────────────────────────────────
+        current_portfolio = load_portfolio_state()  # already loaded earlier, but reload to be safe
+        last_regime = current_portfolio.get("last_regime", "Normal")
+        regime_days = current_portfolio.get("regime_days_in_state", 1)
+
+        if regime == last_regime:
+            regime_days += 1
+        else:
+            regime_days = 1
+            logger.info(f"Regime changed from {last_regime} to {regime}")
+                
         # Get current price
         current_price = round(float(latest["Close"]), 2)
 
@@ -416,6 +477,8 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
                 "atr_expansion_ratio": atr_expansion_ratio,
                 "market_regime": regime,
                 "regime_multiplier": regime_multiplier,
+                "regime_days_in_state": regime_days,
+                "regime_changed_today": (regime_days == 1),
                 "stop_loss_suggestion": stop_loss,
                 "take_profit_suggestion": take_profit,
                 "suggested_position_size": suggested_shares,
@@ -493,6 +556,10 @@ Additional trend filter (apply after core rules):
 - Use sma_50 and sma_200 values to assess how far price is from key levels if needed.
 - When signals conflict (e.g. oversold RSI but Bearish trend), prioritize trend_label over short-term RSI unless RSI is extreme (>80 or <20).
 - If trend_label is "Insufficient data" or sma_200 is None/null, default to HOLD regardless of other indicators.
+
+- If regime_days_in_state >= 10 and market_regime contains "Volatility Regime", strongly prefer HOLD (prolonged stress regime).
+- If regime_changed_today is true, treat the regime as a fresh shift → be extra cautious, especially on new entries.
+- In "High Volatility Regime" or "Elevated Volatility", strongly prefer HOLD or very small positions (respect the already-reduced suggested_position_size) unless RSI < 20 AND trend_label is "Bullish".
 
 Output format (must match exactly):
 
@@ -922,6 +989,30 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
         if packet is None:
             logger.error("Failed to fetch market data. Aborting trading loop.")
             return
+            auto_hold, reason = should_auto_hold(packet)
+            if auto_hold:
+                logger.info(f"AUTO-HOLD (local filter): {reason}")
+                price = packet["market_data"]["price"]
+                total_equity = packet["portfolio"].get("total_equity", packet["portfolio"]["cash"])
+                log_trade(
+                    "HOLD",
+                    0,
+                    price,
+                    f"Local filter HOLD: {reason}",
+                    total_equity,
+                    {
+                        "rsi_14": packet["market_data"]["rsi_14"],
+                        "atr_14": packet["market_data"]["atr_14"],
+                        "regime": packet["market_data"]["market_regime"],
+                        "filter_reason": reason
+                    }
+                )
+                # Still update regime persistence even on auto-hold
+                updated_portfolio = load_portfolio_state()
+                updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
+                updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
+                save_portfolio_state(updated_portfolio)
+                return  # Skip Grok and execution
         
         # Step 2: Get AI decision
         response = query_grok(packet, GROK_API_KEY)
@@ -934,6 +1025,14 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
         
         # Step 3: Execute trade
         success = execute_trade(action, reason, packet, ALPACA_API_KEY, ALPACA_SECRET_KEY, dry_run=dry_run)
+        
+        if packet is not None:
+            updated_portfolio = load_portfolio_state()
+            updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
+            updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
+            save_portfolio_state(updated_portfolio)
+            logger.info(f"Regime persistence updated: {packet['market_data']['market_regime']} "
+                        f"for {packet['market_data']['regime_days_in_state']} day(s)")
         
         if success:
             logger.info("=== Trading loop completed successfully ===")
