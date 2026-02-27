@@ -2,12 +2,13 @@ import yfinance as yf
 import pandas as pd
 import json
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import requests
 import logging
 import os
 import signal
 import sys
+from pathlib import Path
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 import pandas_market_calendars as mcal
@@ -24,12 +25,18 @@ from typing import Tuple
 6. Logs everything for full audit trail
 """
 
+BASE_DIR = Path(__file__).resolve().parent
+LOG_FILE = BASE_DIR / "trading_log.txt"
+PORTFOLIO_FILE = BASE_DIR / "portfolio_state.json"
+TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
+ENV_FILE = BASE_DIR / ".env"
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('trading_log.txt'),
+        logging.FileHandler(LOG_FILE),
         logging.StreamHandler()
     ]
 )
@@ -66,15 +73,23 @@ def _install_signal_logging() -> None:
 
 _install_signal_logging()
 
-# Portfolio state file
-PORTFOLIO_FILE = "portfolio_state.json"
-TRADE_HISTORY_FILE = "trade_history.json"
 
+def previous_trading_day(reference_date: date) -> date:
+    """Return the prior NYSE trading session before reference_date (holiday-aware)."""
+    lookback_days = 10
+    try:
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(
+            start_date=reference_date - timedelta(days=lookback_days),
+            end_date=reference_date - timedelta(days=1)
+        )
+        if not schedule.empty:
+            return schedule.index[-1].date()
+    except Exception as e:
+        logger.warning(f"Trading calendar lookup failed: {e}. Falling back to weekday logic.")
 
-def previous_trading_day(reference_date):
-    """Return the previous weekday (Mon-Fri) for a given date."""
     prev_day = reference_date - timedelta(days=1)
-    while prev_day.weekday() >= 5:  # Saturday/Sunday
+    while prev_day.weekday() >= 5:  # Saturday/Sunday fallback
         prev_day -= timedelta(days=1)
     return prev_day
 
@@ -136,7 +151,7 @@ def load_portfolio_state() -> Dict[str, Any]:
     }
     
     try:
-        if os.path.exists(PORTFOLIO_FILE):
+        if PORTFOLIO_FILE.exists():
             with open(PORTFOLIO_FILE, "r") as f:
                 portfolio = json.load(f)
                 # Ensure new fields exist (for old saved states)
@@ -159,7 +174,7 @@ def save_portfolio_state(portfolio: Dict[str, Any]) -> None:
         try:
             portfolio["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             # Write to temp file first, then rename (atomic operation)
-            temp_file = f"{PORTFOLIO_FILE}.tmp"
+            temp_file = PORTFOLIO_FILE.with_suffix(PORTFOLIO_FILE.suffix + ".tmp")
             with open(temp_file, "w") as f:
                 json.dump(portfolio, f, indent=2)
             os.replace(temp_file, PORTFOLIO_FILE)
@@ -176,7 +191,7 @@ def log_trade(action: str, qty: int, price: float, reason: str, portfolio_value:
     try:
         # Load existing trade history
         trade_history = []
-        if os.path.exists(TRADE_HISTORY_FILE):
+        if TRADE_HISTORY_FILE.exists():
             with open(TRADE_HISTORY_FILE, "r") as f:
                 trade_history = json.load(f)
         
@@ -208,7 +223,7 @@ def log_trade(action: str, qty: int, price: float, reason: str, portfolio_value:
 def has_executed_trade_today() -> bool:
     """Return True if a live BUY/SELL was already recorded today in trade history."""
     try:
-        if not os.path.exists(TRADE_HISTORY_FILE):
+        if not TRADE_HISTORY_FILE.exists():
             return False
 
         with open(TRADE_HISTORY_FILE, "r") as f:
@@ -961,7 +976,7 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
         logger.warning("Market check ignored via flag; continuing execution.")
     
     # Load environment variables from .env file
-    load_dotenv()
+    load_dotenv(dotenv_path=ENV_FILE)
     
     # API Keys
     GROK_API_KEY = os.getenv("GROK_API_KEY")
@@ -992,24 +1007,26 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
             logger.info(f"AUTO-HOLD (local filter): {reason}")
             price = packet["market_data"]["price"]
             total_equity = packet["portfolio"].get("total_equity", packet["portfolio"]["cash"])
-            log_trade(
-                "HOLD",
-                0,
-                price,
-                f"Local filter HOLD: {reason}",
-                total_equity,
-                {
-                    "rsi_14": packet["market_data"]["rsi_14"],
-                    "atr_14": packet["market_data"]["atr_14"],
-                    "regime": packet["market_data"]["market_regime"],
-                    "filter_reason": reason
-                }
-            )
-            # Still update regime persistence even on auto-hold
-            updated_portfolio = load_portfolio_state()
-            updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
-            updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
-            save_portfolio_state(updated_portfolio)
+            if not dry_run:
+                log_trade(
+                    "HOLD",
+                    0,
+                    price,
+                    f"Local filter HOLD: {reason}",
+                    total_equity,
+                    {
+                        "rsi_14": packet["market_data"]["rsi_14"],
+                        "atr_14": packet["market_data"]["atr_14"],
+                        "regime": packet["market_data"]["market_regime"],
+                        "filter_reason": reason
+                    }
+                )
+                updated_portfolio = load_portfolio_state()
+                updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
+                updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
+                save_portfolio_state(updated_portfolio)
+            else:
+                logger.info("DRY-RUN: Skipping trade log and state update for auto-hold")
             return  # Skip Grok and execution
         
         # Step 2: Get AI decision
@@ -1024,7 +1041,7 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
         # Step 3: Execute trade
         success = execute_trade(action, reason, packet, ALPACA_API_KEY, ALPACA_SECRET_KEY, dry_run=dry_run)
         
-        if packet is not None:
+        if packet is not None and not dry_run:
             updated_portfolio = load_portfolio_state()
             updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
             updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
