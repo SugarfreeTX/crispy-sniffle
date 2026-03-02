@@ -273,3 +273,24 @@ REASON: Bearish trend label with price below 50 and 200 SMAs, neutral RSI, and b
 2026-02-26 17:15:10,972 - INFO - Holding position: HOLD - Bearish trend label with price below 50 and 200 SMAs, neutral RSI, and below-average volume.</p>
 2026-02-26 17:15:10,975 - INFO - Logged trade: HOLD 0 shares at $401.72
 2026-02-26 17:15:10,975 - INFO - === Trading loop completed successfully ===
+2026-02-27 14:02:45,140 - INFO - === Starting Daily Trading Loop ===
+2026-02-27 14:02:45,140 - INFO - DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.
+2026-02-27 14:02:45,209 - INFO - Starting MSFT data fetch...
+2026-02-27 14:02:45,209 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 3}
+2026-02-27 14:02:45,209 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-27 14:02:45,735 - INFO - Data fresh: Last bar 2026-02-27
+2026-02-27 14:02:45,740 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 3}
+2026-02-27 14:02:45,740 - INFO - Successfully fetched MSFT data. Price: $393.42, RSI: 45.2, ATR: 9.75, Regime: Normal, Suggested shares: 102, Rel Vol: 0.54 (Latest Vol: 22299469, Avg 20d: 41487818)
+2026-02-27 14:02:45,741 - INFO - AUTO-HOLD (local filter): Neutral RSI, Normal regime, low volume, no regime change
+2026-02-27 14:02:45,741 - INFO - DRY-RUN: Skipping trade log and state update for auto-hold
+2026-02-27 17:15:02,280 - INFO - === Starting Daily Trading Loop ===
+2026-02-27 17:15:02,346 - INFO - Starting MSFT data fetch...
+2026-02-27 17:15:02,346 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 3}
+2026-02-27 17:15:02,346 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-02-27 17:15:02,882 - INFO - Data fresh: Last bar 2026-02-27
+2026-02-27 17:15:02,885 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 3}
+2026-02-27 17:15:02,885 - INFO - Successfully fetched MSFT data. Price: $392.74, RSI: 44.8, ATR: 9.75, Regime: Normal, Suggested shares: 102, Rel Vol: 1.18 (Latest Vol: 50401665, Avg 20d: 42892928)
+2026-02-27 17:15:02,885 - INFO - AUTO-HOLD (local filter): Neutral RSI, Normal regime, low volume, no regime change
+2026-02-27 17:15:02,885 - INFO - Logged trade: HOLD 0 shares at $392.74
+2026-02-27 17:15:02,885 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-19 17:21:41', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 3}
+2026-02-27 17:15:02,886 - INFO - Saved portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-27 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 4}
