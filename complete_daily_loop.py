@@ -287,6 +287,20 @@ def calculate_portfolio_metrics(portfolio: Dict[str, Any], current_price: float)
         "peak_value": round(new_peak, 2),
         "current_drawdown_pct": round(current_drawdown, 2)
     }
+
+def get_drawdown_level(drawdown_pct: float) -> tuple[int, str, float]:
+    """Return (level: int, name: str, size_multiplier: float) 
+    size_multiplier is applied to suggested shares/risk amount
+    """
+    if drawdown_pct >= 10.0:
+        return 3, "Emergency (>10%)", 0.0  # No new risk allowed
+    elif drawdown_pct >= 8.0:
+        return 2, "Restricted (8-9.9%)", 0.25 # Only very small positions allowed
+    elif drawdown_pct >= 5.0:
+        return 1, "Caution (5-7.9%)", 0.5   # Reduce position size by 50%
+    else: 
+        return 0, "Normal (<5%)", 1.0   # No adjustment
+
     
 def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
     """Quick local check: if conditions strongly suggest HOLD, skip Grok call. Returns (bool, reason)."""
@@ -303,6 +317,20 @@ def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
     drawdown_pct = port.get("current_drawdown_pct", 0.0)
     trend_label = md.get("trend_label", "Neutral")
     regime_changed = md.get("regime_changed_today", False)
+
+    # NEW: Drawdown-based rules (highest priority) ---------------------------------------------
+    if drawdown_pct >= 10.0:
+        return True, f"Emergency drawdown ({drawdown_pct:.1f}%) - all new risk blocked"
+    
+    if drawdown_pct >= 8.0:
+        return True, f"Restricted drawdown ({drawdown_pct:.1f}%) - HOLD or exit only, no new BUY positions"
+    
+    if drawdown_pct >= 5.0:
+        # Caution level - still let Grok decide, but only allow entry on extreme setups 
+        if "Bullish" not in trend_label or rsi > 35: # not extreme oversold in uptrend 
+            return True, f"Caution drawdown ({drawdown_pct:.1f}%) - not extreme oversold setup"
+
+    # --- Regime and indicator-based rules (apply after drawdown is <5%) ------------------------
 
     # Rule 1: Neutral zone – most common auto-hold case
     if (35 <= rsi <= 65 and
@@ -460,6 +488,10 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
         
         # Calculate portfolio metrics including drawdown
         metrics = calculate_portfolio_metrics(portfolio, current_price)
+        drawdown_pct = metrics["current_drawdown_pct"]
+
+        # Determine drawdown level 
+        dd_level, dd_name, dd_size_multiplier = get_drawdown_level(drawdown_pct)
 
         # Add unrealized PnL percentage for easier use
         unrealized_pnl_pct = round(metrics["unrealized_pnl"] / (portfolio["shares"] * current_price) * 100, 2) if portfolio["shares"] > 0 else 0.0
@@ -477,6 +509,9 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
                 "total_return_pct": metrics["total_return_pct"],
                 "current_drawdown_pct": metrics["current_drawdown_pct"],
                 "unrealized_pnl_pct": unrealized_pnl_pct,
+                "drawdown_level": dd_level,
+                "drawdown_name": dd_name,
+                "drawdown_size_multiplier": dd_size_multiplier,
             },
             "market_data": {
                 "price": current_price,
@@ -572,6 +607,15 @@ Additional trend filter (apply after core rules):
 - If regime_days_in_state >= 10 and market_regime contains "Volatility Regime", strongly prefer HOLD (prolonged stress regime).
 - If regime_changed_today is true, treat the regime as a fresh shift → be extra cautious, especially on new entries.
 - In "High Volatility Regime" or "Elevated Volatility", strongly prefer HOLD or very small positions (respect the already-reduced suggested_position_size) unless RSI < 20 AND trend_label is "Bullish".
+
+- drawdown_level (0=normal, 1=caution, 2=restricted, 3=emergency) indicates current drawdown severity. 
+- drawdown_status gives a human-readable name (e.g. "Caution (5-7.9%)", "Emergency (>10%)").
+- drawdown_size_multiplier is the maximum allowed fraction of normal position size (e.g. 0.5 = half size).
+- Drawdown rules (apply after regime rules): 
+    - If drawdown_level >= 2 (Restricted or Emergency), strongly prefer HOLD or partial/full exit -- DO NOT open new BUY positions. 
+    - If drawdown_level == 1 (Caution), be very conservative: favor HOLD, only consider small BUY if RSI extremely oversold (<20) in strong Bullish trend. 
+    - Always respect drawdown_size_multiplier when sizing any position. 
+    - Higher drawdown levels override other signals toward caution or defense. 
 
 Output format (must match exactly):
 
@@ -1003,8 +1047,9 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
             return
 
         auto_hold, reason = should_auto_hold(packet)
+
         if auto_hold:
-            logger.info(f"AUTO-HOLD (local filter): {reason}")
+            logger.info(f"AUTO-HOLD (local filter): {reason} | RSI={packet['market_data']['rsi_14']:.1f}, Regime={packet['market_data']['market_regime']}, Rel Vol={packet['market_data']['relative_volume']:.2f}")
             price = packet["market_data"]["price"]
             total_equity = packet["portfolio"].get("total_equity", packet["portfolio"]["cash"])
             if not dry_run:
@@ -1025,8 +1070,7 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
                 updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
                 updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
                 save_portfolio_state(updated_portfolio)
-            else:
-                logger.info("DRY-RUN: Skipping trade log and state update for auto-hold")
+
             return  # Skip Grok and execution
         
         # Step 2: Get AI decision

@@ -149,6 +149,7 @@ venv.bak/
 # Logs that contain API keys or credentials
 trade_history.json
 trading_log.txt
+trading_log_feb2026.txt
 
 # back up functions 
 modules/
