@@ -13,6 +13,13 @@ from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 import pandas_market_calendars as mcal
 from typing import Tuple
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+import os
+import re
+from dotenv import load_dotenv
 
 
 """
@@ -732,8 +739,6 @@ def place_alpaca_order(api_key: str, secret_key: str, symbol: str, qty: int, sid
         logger.error(f"Unexpected error placing order: {e}")
         return None
 
-
-
 # Convert Grok's action into an Alpaca trade
 def execute_trade(
     action: str,
@@ -1006,27 +1011,132 @@ def execute_trade(
             logger.info("DRY-RUN HOLD: No trade, no portfolio mutation")
         return True
 
+from typing import Optional
+
+def send_email_summary(
+    packet: Optional[dict] = None,
+    action: str = "SKIPPED",
+    reason: str = "",
+    dry_run: bool = False,
+    log_path: str = "trading_log.txt"
+):
+    """
+    Send summary email with:
+    - Key metrics
+    - Today's log entries only (in body — no attachment)
+    """
+    load_dotenv()  # make sure .env is fresh
+
+    sender    = os.getenv("EMAIL_SENDER") or ""
+    password  = os.getenv("EMAIL_PASSWORD") or ""
+    recipient = os.getenv("EMAIL_RECIPIENT")
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port   = int(os.getenv("SMTP_PORT", "587"))
+
+    if not all([sender, password, recipient]):
+        logger.warning("Email credentials missing in .env — skipping email")
+        return
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_prefix = today_str + " "   # e.g. "2025-03-15 "
+
+    # ── Collect today's log lines ─────────────────────────────────────
+    log_lines_today = []
+    try:
+        if os.path.exists(log_path):
+            with open(log_path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    # Most basic match: line starts with today's date + space
+                    if line.startswith(today_prefix):
+                        log_lines_today.append(line.rstrip())
+        else:
+            log_lines_today.append("(log file not found)")
+    except Exception as e:
+        log_lines_today = [f"Could not read log: {type(e).__name__}: {e}"]
+
+    # Limit size — prevent enormous emails if something is spamming logs
+    if len(log_lines_today) > 400:
+        log_lines_today = (
+            log_lines_today[:350] +
+            ["", "… (truncated — too many lines) …", ""] +
+            log_lines_today[-50:]
+        )
+
+    # ── Build email body ──────────────────────────────────────────────
+    body_parts = []
+
+    body_parts.append(f"MSFT Trading Bot — Daily Run Summary")
+    body_parts.append(f"Date:          {today_str}")
+    body_parts.append(f"Mode:          {'DRY-RUN' if dry_run else 'LIVE'}")
+    body_parts.append(f"Action:        {action}")
+    body_parts.append(f"Reason:        {reason or '—'}")
+    body_parts.append("-" * 65)
+
+    if packet:
+        md  = packet.get("market_data", {})
+        port = packet.get("portfolio", {})
+        body_parts.extend([
+            f"Price:         ${md.get('price', '—'):.2f}",
+            f"RSI(14):       {md.get('rsi_14', '—')}",
+            f"ATR(14):       {md.get('atr_14', '—')}",
+            f"Regime:        {md.get('market_regime', '—')} "
+              f"({md.get('regime_days_in_state', '—')} days)",
+            f"Drawdown:      {port.get('current_drawdown_pct', '—'):.2f}%",
+            f"Total Equity:  ${port.get('total_equity', port.get('cash', '—')):.2f}",
+            "-" * 65
+        ])
+
+    # Today's log entries
+    if log_lines_today:
+        body_parts.append("Today's log entries:")
+        body_parts.append("")
+        body_parts.extend(log_lines_today)
+    else:
+        body_parts.append("(No log entries found for today)")
+
+    body = "\n".join(body_parts)
+
+    # ── Build MIME message ────────────────────────────────────────────
+    msg = MIMEMultipart()
+    msg["From"]    = sender # type: ignore
+    msg["To"]      = recipient # type: ignore
+    msg["Subject"] = f"MSFT Bot Daily Run • {today_str} • {action} ({'DRY' if dry_run else 'LIVE'})"
+
+    msg.attach(MIMEText(body, "plain", _charset="utf-8"))
+
+    # ── Send ──────────────────────────────────────────────────────────
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            # Only call login if sender and password are non-empty strings
+            if sender and password:
+                server.login(sender, password)
+            server.send_message(msg)
+        logger.info(f"Daily summary email sent to {recipient}")
+    except Exception as e:
+        logger.error(f"Failed to send summary email: {e}")
+
+
 def main(dry_run: bool = False, ignore_market_check: bool = False):
     """Main trading loop with comprehensive error handling and logging"""
+    packet = None
+    action = None
+    reason = None
     logger.info("=== Starting Daily Trading Loop ===")
     if dry_run:
         logger.info("DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.")
-    
     # Check if market is open (basic weekend check)
     if not ignore_market_check and not is_market_open():
         logger.warning("Market is closed (weekend/holiday). Exiting.")
         return
     if ignore_market_check:
         logger.warning("Market check ignored via flag; continuing execution.")
-    
     # Load environment variables from .env file
     load_dotenv(dotenv_path=ENV_FILE)
-    
     # API Keys
     GROK_API_KEY = os.getenv("GROK_API_KEY")
     ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
     ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-    
     # Check required API keys
     if not GROK_API_KEY:
         logger.error("GROK_API_KEY not found in environment variables. Please check your .env file.")
@@ -1038,16 +1148,13 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
         if not ALPACA_SECRET_KEY:
             logger.error("ALPACA_SECRET_KEY not found in environment variables. Please check your .env file.")
             return
-    
     try:
         # Step 1: Fetch market data
         packet = fetch_msft_daily()
         if packet is None:
             logger.error("Failed to fetch market data. Aborting trading loop.")
             return
-
         auto_hold, reason = should_auto_hold(packet)
-
         if auto_hold:
             logger.info(f"AUTO-HOLD (local filter): {reason} | RSI={packet['market_data']['rsi_14']:.1f}, Regime={packet['market_data']['market_regime']}, Rel Vol={packet['market_data']['relative_volume']:.2f}")
             price = packet["market_data"]["price"]
@@ -1070,21 +1177,16 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
                 updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
                 updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
                 save_portfolio_state(updated_portfolio)
-
             return  # Skip Grok and execution
-        
         # Step 2: Get AI decision
         response = query_grok(packet, GROK_API_KEY)
         if response is None:
             logger.error("Failed to get response from Grok. Aborting trading loop.")
             return
-            
         action, reason = parse_action(response)
         logger.info(f"Grok decision: {action} - {reason}")
-        
         # Step 3: Execute trade
         success = execute_trade(action, reason, packet, ALPACA_API_KEY, ALPACA_SECRET_KEY, dry_run=dry_run)
-        
         if packet is not None and not dry_run:
             updated_portfolio = load_portfolio_state()
             updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
@@ -1092,21 +1194,33 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
             save_portfolio_state(updated_portfolio)
             logger.info(f"Regime persistence updated: {packet['market_data']['market_regime']} "
                         f"for {packet['market_data']['regime_days_in_state']} day(s)")
-        
         if success:
             logger.info("=== Trading loop completed successfully ===")
+        # Quick summary line for each run into trading_log.txt
+        if packet is not None:
+            dd_pct = packet["portfolio"].get("current_drawdown_pct", 0.0)
+            regime = packet["market_data"].get("market_regime", "Unknown")
+            days_in_regime = packet["market_data"].get("regime_days_in_state", 0)
+            logger.info(f"Run summary | Drawdown: {dd_pct:.1f}% | Regime: {regime} ({days_in_regime} days) | Action: {action if action is not None else 'SKIPPED'}")
         else:
             logger.error("=== Trading loop completed with errors ===")
-
     except KeyboardInterrupt:
         # This is almost always a SIGINT from the terminal/IDE (e.g., VS Code re-run/stop).
         # Log it explicitly so it doesn't look like a mysterious crash.
         logger.warning("KeyboardInterrupt (SIGINT) received; exiting early.")
         return
-            
     except Exception as e:
         # Use logger.exception to include the full traceback in logs for post-mortems.
         logger.exception("Unexpected error in main trading loop")
+    finally:
+        # Always send summary — even on error or early exit
+        send_email_summary(
+            packet=packet,
+            action=action if action is not None else "SKIPPED/ERROR",
+            reason=reason if reason is not None else "",
+            dry_run=dry_run
+        )
+    logger.info("=== Daily trading loop finished ===")
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run daily MSFT trading loop")

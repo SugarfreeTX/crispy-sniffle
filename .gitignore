@@ -223,3 +223,7 @@ obsidian/
 #pred_engine
 pred_engine.py
 template/
+
+# temp script - remove once implemented in main codebase
+sending_emaiil_func.py
+trading_log_mar_dryrun.txt
