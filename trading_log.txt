@@ -1,0 +1,12 @@
+2026-03-02 17:15:01,371 - INFO - === Starting Daily Trading Loop ===
+2026-03-02 17:15:01,436 - INFO - Starting MSFT data fetch...
+2026-03-02 17:15:01,436 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-27 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 4}
+2026-03-02 17:15:01,436 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-03-02 17:15:02,085 - INFO - Data fresh: Last bar 2026-03-02
+2026-03-02 17:15:02,088 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-27 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 4}
+2026-03-02 17:15:02,088 - INFO - Successfully fetched MSFT data. Price: $398.55, RSI: 39.3, ATR: 9.51, Regime: Normal, Suggested shares: 105, Rel Vol: 0.78 (Latest Vol: 32492755, Avg 20d: 41632957)
+2026-03-02 17:15:02,088 - INFO - AUTO-HOLD (local filter): Neutral RSI, Normal regime, low volume, no regime change | RSI=39.3, Regime=Normal, Rel Vol=0.78
+2026-03-02 17:15:02,089 - INFO - Logged trade: HOLD 0 shares at $398.55
+2026-03-02 17:15:02,089 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-27 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 4}
+2026-03-02 17:15:02,089 - INFO - Saved portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-02 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 5}
+2026-03-02 17:15:02,974 - INFO - Daily summary email sent to khemra.keo@icloud.com

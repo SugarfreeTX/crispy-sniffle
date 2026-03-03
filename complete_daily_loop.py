@@ -20,7 +20,7 @@ from datetime import datetime
 import os
 import re
 from dotenv import load_dotenv
-
+from typing import Optional
 
 """
 -How It Works-
@@ -144,8 +144,27 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
         logger.warning(f"Error calculating ATR: {e}. Returning 0.0")
         return 0.0  # Return 0 if calculation fails
 
+def fetch_alpaca_cash_balance(api_key: str, secret_key: str) -> Optional[float]:
+    """Fetch the actual cash balance directly from the Alpaca account."""
+    url = "https://paper-api.alpaca.markets/v2/account"
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": secret_key
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        cash = float(data.get("cash", 0.0))
+        logger.info(f"Fetched Alpaca cash balance: ${cash:.2f}")
+        return cash
+    except Exception as e:
+        logger.warning(f"Failed to fetch Alpaca cash balance: {e}. Using local state.")
+        return None
+
+
 def load_portfolio_state() -> Dict[str, Any]:
-    """Load portfolio state from file, return default if file doesn't exist"""
+    """Load portfolio state from file, syncing cash from Alpaca if credentials available."""
     default_portfolio = {
         "cash": 100000.00,
         "shares": 0,
@@ -164,12 +183,31 @@ def load_portfolio_state() -> Dict[str, Any]:
                 # Ensure new fields exist (for old saved states)
                 portfolio.setdefault("last_regime", "Normal")
                 portfolio.setdefault("regime_days_in_state", 1)
-                logger.info(f"Loaded portfolio state: {portfolio}")
-                return portfolio
         else:
             logger.info("No existing portfolio file found, using default portfolio")
-            save_portfolio_state(default_portfolio)
-            return default_portfolio
+            portfolio = default_portfolio
+            save_portfolio_state(portfolio)
+
+        # ── Sync cash from Alpaca (live source of truth) ──────────────
+        load_dotenv(dotenv_path=ENV_FILE)
+        alpaca_key = os.getenv("ALPACA_API_KEY")
+        alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
+        if alpaca_key and alpaca_secret:
+            alpaca_cash = fetch_alpaca_cash_balance(alpaca_key, alpaca_secret)
+            if alpaca_cash is not None:
+                local_cash = portfolio.get("cash", 0.0)
+                diff = local_cash - alpaca_cash
+                if abs(diff) > 0.01:
+                    logger.warning(
+                        f"Cash sync: local=${local_cash:.2f} | Alpaca=${alpaca_cash:.2f} | "
+                        f"diff=${diff:.2f} — updating local state to match Alpaca."
+                    )
+                portfolio["cash"] = alpaca_cash
+        else:
+            logger.info("Alpaca credentials not available — using local cash from portfolio state.")
+
+        logger.info(f"Loaded portfolio state: {portfolio}")
+        return portfolio
     except Exception as e:
         logger.error(f"Error loading portfolio state: {e}. Using default portfolio.")
         return default_portfolio
@@ -1011,8 +1049,6 @@ def execute_trade(
             logger.info("DRY-RUN HOLD: No trade, no portfolio mutation")
         return True
 
-from typing import Optional
-
 def send_email_summary(
     packet: Optional[dict] = None,
     action: str = "SKIPPED",
@@ -1128,6 +1164,7 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
     # Check if market is open (basic weekend check)
     if not ignore_market_check and not is_market_open():
         logger.warning("Market is closed (weekend/holiday). Exiting.")
+        action = "SKIPPED"
         return
     if ignore_market_check:
         logger.warning("Market check ignored via flag; continuing execution.")
@@ -1140,25 +1177,30 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
     # Check required API keys
     if not GROK_API_KEY:
         logger.error("GROK_API_KEY not found in environment variables. Please check your .env file.")
+        action = "SKIPPED"
         return
     if not dry_run:
         if not ALPACA_API_KEY:
             logger.error("ALPACA_API_KEY not found in environment variables. Please check your .env file.")
+            action = "SKIPPED"
             return
         if not ALPACA_SECRET_KEY:
             logger.error("ALPACA_SECRET_KEY not found in environment variables. Please check your .env file.")
+            action = "SKIPPED"
             return
     try:
         # Step 1: Fetch market data
         packet = fetch_msft_daily()
         if packet is None:
             logger.error("Failed to fetch market data. Aborting trading loop.")
+            action = "SKIPPED"
             return
         auto_hold, reason = should_auto_hold(packet)
         if auto_hold:
             logger.info(f"AUTO-HOLD (local filter): {reason} | RSI={packet['market_data']['rsi_14']:.1f}, Regime={packet['market_data']['market_regime']}, Rel Vol={packet['market_data']['relative_volume']:.2f}")
             price = packet["market_data"]["price"]
             total_equity = packet["portfolio"].get("total_equity", packet["portfolio"]["cash"])
+            action = "HOLD"
             if not dry_run:
                 log_trade(
                     "HOLD",
@@ -1182,6 +1224,7 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
         response = query_grok(packet, GROK_API_KEY)
         if response is None:
             logger.error("Failed to get response from Grok. Aborting trading loop.")
+            action = "SKIPPED"
             return
         action, reason = parse_action(response)
         logger.info(f"Grok decision: {action} - {reason}")
