@@ -1,9 +1,9 @@
 {
-  "cash": 100102.0,
+  "cash": 99961.94,
   "shares": 0,
   "cost_basis": 0.0,
-  "last_updated": "2026-03-02 17:15:02",
+  "last_updated": "2026-03-05 17:15:03",
   "peak_value": 100102.0,
   "last_regime": "Normal",
-  "regime_days_in_state": 5
+  "regime_days_in_state": 8
 }

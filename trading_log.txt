@@ -10,3 +10,51 @@
 2026-03-02 17:15:02,089 - INFO - Loaded portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-02-27 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 4}
 2026-03-02 17:15:02,089 - INFO - Saved portfolio state: {'cash': 100102.0, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-02 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 5}
 2026-03-02 17:15:02,974 - INFO - Daily summary email sent to khemra.keo@icloud.com
+2026-03-03 17:15:02,865 - INFO - === Starting Daily Trading Loop ===
+2026-03-03 17:15:02,931 - INFO - Starting MSFT data fetch...
+2026-03-03 17:15:03,661 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-03 17:15:03,662 - WARNING - Cash sync: local=$100102.00 | Alpaca=$99961.94 | diff=$140.06 — updating local state to match Alpaca.
+2026-03-03 17:15:03,662 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-02 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 5}
+2026-03-03 17:15:03,662 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-03-03 17:15:04,202 - INFO - Data fresh: Last bar 2026-03-03
+2026-03-03 17:15:04,337 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-03 17:15:04,337 - WARNING - Cash sync: local=$100102.00 | Alpaca=$99961.94 | diff=$140.06 — updating local state to match Alpaca.
+2026-03-03 17:15:04,337 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-02 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 5}
+2026-03-03 17:15:04,338 - INFO - Successfully fetched MSFT data. Price: $403.93, RSI: 44.1, ATR: 9.73, Regime: Normal, Suggested shares: 102, Rel Vol: 0.91 (Latest Vol: 37947881, Avg 20d: 41573009)
+2026-03-03 17:15:04,338 - INFO - AUTO-HOLD (local filter): Neutral RSI, Normal regime, low volume, no regime change | RSI=44.1, Regime=Normal, Rel Vol=0.91
+2026-03-03 17:15:04,339 - INFO - Logged trade: HOLD 0 shares at $403.93
+2026-03-03 17:15:04,469 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-03 17:15:04,469 - WARNING - Cash sync: local=$100102.00 | Alpaca=$99961.94 | diff=$140.06 — updating local state to match Alpaca.
+2026-03-03 17:15:04,469 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-02 17:15:02', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 5}
+2026-03-03 17:15:04,471 - INFO - Saved portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-03 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 6}
+2026-03-03 17:15:05,924 - INFO - Daily summary email sent to khemra.keo@icloud.com
+2026-03-04 17:15:02,580 - INFO - === Starting Daily Trading Loop ===
+2026-03-04 17:15:02,647 - INFO - Starting MSFT data fetch...
+2026-03-04 17:15:03,324 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-04 17:15:03,325 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-03 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 6}
+2026-03-04 17:15:03,326 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-03-04 17:15:03,863 - INFO - Data fresh: Last bar 2026-03-04
+2026-03-04 17:15:03,999 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-04 17:15:03,999 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-03 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 6}
+2026-03-04 17:15:03,999 - INFO - Successfully fetched MSFT data. Price: $405.20, RSI: 51.4, ATR: 9.39, Regime: Normal, Suggested shares: 106, Rel Vol: 0.88 (Latest Vol: 35644323, Avg 20d: 40296586)
+2026-03-04 17:15:03,999 - INFO - AUTO-HOLD (local filter): Neutral RSI, Normal regime, low volume, no regime change | RSI=51.4, Regime=Normal, Rel Vol=0.88
+2026-03-04 17:15:04,000 - INFO - Logged trade: HOLD 0 shares at $405.20
+2026-03-04 17:15:04,139 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-04 17:15:04,140 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-03 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 6}
+2026-03-04 17:15:04,141 - INFO - Saved portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-04 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 7}
+2026-03-04 17:15:04,975 - INFO - Daily summary email sent to khemra.keo@icloud.com
+2026-03-05 17:15:02,737 - INFO - === Starting Daily Trading Loop ===
+2026-03-05 17:15:02,803 - INFO - Starting MSFT data fetch...
+2026-03-05 17:15:03,256 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-05 17:15:03,256 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-04 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 7}
+2026-03-05 17:15:03,257 - INFO - Fetching MSFT market data from Yahoo Finance...
+2026-03-05 17:15:03,720 - INFO - Data fresh: Last bar 2026-03-05
+2026-03-05 17:15:03,848 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-05 17:15:03,849 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-04 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 7}
+2026-03-05 17:15:03,849 - INFO - Successfully fetched MSFT data. Price: $410.68, RSI: 57.4, ATR: 9.33, Regime: Normal, Suggested shares: 107, Rel Vol: 0.96 (Latest Vol: 38460684, Avg 20d: 39977184)
+2026-03-05 17:15:03,849 - INFO - AUTO-HOLD (local filter): Neutral RSI, Normal regime, low volume, no regime change | RSI=57.4, Regime=Normal, Rel Vol=0.96
+2026-03-05 17:15:03,851 - INFO - Logged trade: HOLD 0 shares at $410.68
+2026-03-05 17:15:03,983 - INFO - Fetched Alpaca cash balance: $99961.94
+2026-03-05 17:15:03,984 - INFO - Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-04 17:15:04', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 7}
+2026-03-05 17:15:03,985 - INFO - Saved portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'last_updated': '2026-03-05 17:15:03', 'peak_value': 100102.0, 'last_regime': 'Normal', 'regime_days_in_state': 8}
+2026-03-05 17:15:04,954 - INFO - Daily summary email sent to khemra.keo@icloud.com

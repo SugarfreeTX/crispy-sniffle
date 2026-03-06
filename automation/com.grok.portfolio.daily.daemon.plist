@@ -17,6 +17,16 @@
     <key>WorkingDirectory</key>
     <string>/Users/khemra/dev/crispy-sniffle</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/khemra</string>
+        <key>PATH</key>
+        <string>/Users/khemra/dev/crispy-sniffle/.msft/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
     <key>UserName</key>
     <string>khemra</string>
 
@@ -69,6 +79,9 @@
 
     <key>RunAtLoad</key>
     <false/>
+
+    <key>ExitTimeOut</key>
+    <integer>60</integer>
 
     <key>StandardOutPath</key>
     <string>/Users/khemra/dev/crispy-sniffle/trading_launchd.out.log</string>
