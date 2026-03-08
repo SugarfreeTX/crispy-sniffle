@@ -11,7 +11,7 @@
         <string>-s</string>
         <string>-i</string>
         <string>/Users/khemra/dev/crispy-sniffle/.msft/bin/python</string>
-        <string>/Users/khemra/dev/crispy-sniffle/complete_daily_loop.py</string>
+        <string>/Users/khemra/dev/crispy-sniffle/equity_msft/complete_daily_loop.py</string>
     </array>
 
     <key>WorkingDirectory</key>
