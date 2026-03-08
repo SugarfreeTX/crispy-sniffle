@@ -174,6 +174,9 @@ def load_portfolio_state() -> Dict[str, Any]:
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "last_regime": "Normal",
         "regime_days_in_state": 1,
+        "consecutive_loss_streak": 0,
+        "max_consecutive_losses": 5,
+        "last_trade_was_win": False,
     }
     
     try:
@@ -183,6 +186,9 @@ def load_portfolio_state() -> Dict[str, Any]:
                 # Ensure new fields exist (for old saved states)
                 portfolio.setdefault("last_regime", "Normal")
                 portfolio.setdefault("regime_days_in_state", 1)
+                portfolio.setdefault("consecutive_loss_streak", 0)
+                portfolio.setdefault("max_consecutive_losses", 5)
+                portfolio.setdefault("last_trade_was_win", False)
         else:
             logger.info("No existing portfolio file found, using default portfolio")
             portfolio = default_portfolio
@@ -345,8 +351,18 @@ def get_drawdown_level(drawdown_pct: float) -> tuple[int, str, float]:
         return 1, "Caution (5-7.9%)", 0.5   # Reduce position size by 50%
     else: 
         return 0, "Normal (<5%)", 1.0   # No adjustment
-
     
+def get_loss_streak_multiplier(portfolio: Dict[str, Any]) -> float:
+    streak = portfolio.get("consecutive_loss_streak", 0)
+    if streak >= 5:
+        return 0.0
+    elif streak >= 4:
+        return 0.25
+    elif streak >= 3:
+        return 0.5
+    else:
+        return 1.0
+
 def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
     """Quick local check: if conditions strongly suggest HOLD, skip Grok call. Returns (bool, reason)."""
     if packet is None:
@@ -557,6 +573,9 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
                 "drawdown_level": dd_level,
                 "drawdown_name": dd_name,
                 "drawdown_size_multiplier": dd_size_multiplier,
+                "consecutive_loss_streak": portfolio.get("consecutive_loss_streak", 0),
+                "max_consecutive_losses": portfolio.get("max_consecutive_losses", 5),
+                "loss_streak_multiplier": get_loss_streak_multiplier(portfolio),  # or calculate inline
             },
             "market_data": {
                 "price": current_price,
@@ -653,6 +672,10 @@ Additional trend filter (apply after core rules):
 - If regime_changed_today is true, treat the regime as a fresh shift → be extra cautious, especially on new entries.
 - In "High Volatility Regime" or "Elevated Volatility", strongly prefer HOLD or very small positions (respect the already-reduced suggested_position_size) unless RSI < 20 AND trend_label is "Bullish".
 
+- consecutive_loss_streak shows current count of consecutive realized losses.
+- loss_streak_multiplier is the allowed fraction of normal BUY size (1.0 = full, 0.5 = half, 0.25 = quarter, 0.0 = no new buys).
+- Respect loss_streak_multiplier when suggesting BUY size; prefer HOLD/SELL if multiplier < 1.0 and conditions aren't exceptional.
+- Do NOT suggest BUY when streak >= max_consecutive_losses (currently 5).
 - drawdown_level (0=normal, 1=caution, 2=restricted, 3=emergency) indicates current drawdown severity. 
 - drawdown_status gives a human-readable name (e.g. "Caution (5-7.9%)", "Emergency (>10%)").
 - drawdown_size_multiplier is the maximum allowed fraction of normal position size (e.g. 0.5 = half size).
@@ -777,6 +800,15 @@ def place_alpaca_order(api_key: str, secret_key: str, symbol: str, qty: int, sid
         logger.error(f"Unexpected error placing order: {e}")
         return None
 
+def can_open_new_position(portfolio: Dict[str, Any]) -> tuple[bool, str]:
+    """Helper to check if we can open new positions based on consecutive loss streaks"""
+    streak = portfolio.get("consecutive_loss_streak", 0)
+    max_streak = portfolio.get("max_consecutive_losses", 5)
+    
+    if streak >= max_streak:
+        return False, f"Loss streak protection active ({streak}/{max_streak} consecutive losses) — new buys blocked"
+    return True, "OK"
+
 # Convert Grok's action into an Alpaca trade
 def execute_trade(
     action: str,
@@ -836,6 +868,18 @@ def execute_trade(
             "requested_action": action
         })
         return False
+    
+    # Consecutive loss streak protection
+    if action == "BUY":
+        # Consecutive loss streak protection
+        allowed, block_reason = can_open_new_position(portfolio)
+        if not allowed:
+            logger.warning(f"BUY BLOCKED: {block_reason}")
+            if not dry_run:
+                log_trade("BLOCKED_LOSS_STREAK", 0, price, block_reason, total_equity)
+            else:
+                logger.info(f"DRY-RUN: Would block BUY → {block_reason}")
+            return False
 
     if action == "BUY":
         # Calculate maximum affordable shares with cash
@@ -846,10 +890,26 @@ def execute_trade(
         current_position_value = shares * price
         available_position_capacity = max_position_value - current_position_value
         max_by_position_limit = int(available_position_capacity / price) if available_position_capacity > 0 else 0
-        
+    
         # Use the minimum of: suggested shares, affordable shares, position limit
         qty = min(suggested_shares, max_affordable, max_by_position_limit) if suggested_shares > 0 else 0
         
+        # Apply loss streak protection multiplier
+        if action == "BUY":
+            streak_multiplier = get_loss_streak_multiplier(portfolio)
+            if streak_multiplier < 1.0:
+                logger.info(f"Loss streak {portfolio['consecutive_loss_streak']} → applying size multiplier {streak_multiplier}")
+            qty = int(qty * streak_multiplier)
+            
+            if qty < 1 and streak_multiplier > 0:
+                qty = 1  # Optional: minimum 1 share probe if multiplier allows any size
+            
+            if qty <= 0:
+                logger.warning(f"BUY reduced to 0 shares due to loss streak protection")
+                if not dry_run:
+                    log_trade("BLOCKED_LOSS_STREAK", 0, price, f"Streak {portfolio['consecutive_loss_streak']} → size reduced to 0", total_equity)
+                return False
+            
         logger.info(f"Position sizing: Suggested={suggested_shares}, Affordable={max_affordable}, PositionLimit={max_by_position_limit}, Final={qty}")
         
         if qty <= 0:
@@ -1012,6 +1072,23 @@ def execute_trade(
 
             try:
                 save_portfolio_state(updated_portfolio)
+                realized_pnl = (execution_price - cost_basis) * qty
+                was_win = realized_pnl > 0
+                
+                current_streak = current_portfolio.get("consecutive_loss_streak", 0)
+                
+                if was_win:
+                    new_streak = 0
+                    logger.info(f"Realized WIN → loss streak RESET to 0 (PnL: ${realized_pnl:.2f})")
+                else:
+                    new_streak = current_streak + 1
+                    logger.info(f"Realized LOSS → streak now {new_streak} (PnL: ${realized_pnl:.2f})")
+                
+                updated_portfolio["consecutive_loss_streak"] = new_streak
+                
+                # Re-save with streak
+                save_portfolio_state(updated_portfolio)
+                
                 log_trade(
                     "SELL_PARTIAL" if sell_pct < 1.0 else "SELL_FULL",
                     qty,
@@ -1023,7 +1100,10 @@ def execute_trade(
                         "remaining_shares": remaining_shares,
                         "rsi_14": packet["market_data"]["rsi_14"],
                         "atr_14": packet["market_data"]["atr_14"],
-                        "regime": packet["market_data"]["market_regime"]
+                        "regime": packet["market_data"]["market_regime"],
+                        "realized_pnl": round(realized_pnl, 2),
+                        "loss_streak_after": new_streak,
+                        "was_win": was_win
                     }
                 )
                 logger.info(f"SELL executed: {qty} shares ({sell_pct*100:.0f}%) at ${execution_price:.2f}. "
