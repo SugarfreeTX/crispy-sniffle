@@ -33,10 +33,12 @@ from typing import Optional
 """
 
 BASE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BASE_DIR.parent
 LOG_FILE = BASE_DIR / "trading_log.txt"
 PORTFOLIO_FILE = BASE_DIR / "portfolio_state.json"
 TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
-ENV_FILE = BASE_DIR / ".env"
+ENV_FILE = REPO_ROOT / ".env"
+FALLBACK_ENV_FILE = BASE_DIR / ".env"
 
 # Configure logging
 logging.basicConfig(
@@ -48,6 +50,30 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def load_env_with_fallback() -> Optional[Path]:
+    """Load env vars from repo root .env, falling back to equity_msft/.env."""
+    if ENV_FILE.exists():
+        load_dotenv(dotenv_path=ENV_FILE)
+        return ENV_FILE
+
+    if FALLBACK_ENV_FILE.exists():
+        load_dotenv(dotenv_path=FALLBACK_ENV_FILE)
+        logger.warning(
+            "Root .env not found at %s; using fallback %s",
+            ENV_FILE,
+            FALLBACK_ENV_FILE,
+        )
+        return FALLBACK_ENV_FILE
+
+    load_dotenv()
+    logger.warning(
+        "No .env file found at %s or %s; relying on process environment",
+        ENV_FILE,
+        FALLBACK_ENV_FILE,
+    )
+    return None
 
 
 def _install_signal_logging() -> None:
@@ -195,7 +221,7 @@ def load_portfolio_state() -> Dict[str, Any]:
             save_portfolio_state(portfolio)
 
         # ── Sync cash from Alpaca (live source of truth) ──────────────
-        load_dotenv(dotenv_path=ENV_FILE)
+        load_env_with_fallback()
         alpaca_key = os.getenv("ALPACA_API_KEY")
         alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
         if alpaca_key and alpaca_secret:
@@ -1141,7 +1167,7 @@ def send_email_summary(
     - Key metrics
     - Today's log entries only (in body — no attachment)
     """
-    load_dotenv()  # make sure .env is fresh
+    load_env_with_fallback()  # make sure .env is fresh
 
     sender    = os.getenv("EMAIL_SENDER") or ""
     password  = os.getenv("EMAIL_PASSWORD") or ""
@@ -1248,8 +1274,8 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
         return
     if ignore_market_check:
         logger.warning("Market check ignored via flag; continuing execution.")
-    # Load environment variables from .env file
-    load_dotenv(dotenv_path=ENV_FILE)
+    # Load environment variables from repo root .env, with local fallback.
+    load_env_with_fallback()
     # API Keys
     GROK_API_KEY = os.getenv("GROK_API_KEY")
     ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
