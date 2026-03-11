@@ -1160,7 +1160,7 @@ def send_email_summary(
     action: str = "SKIPPED",
     reason: str = "",
     dry_run: bool = False,
-    log_path: str = "trading_log.txt"
+    log_path: str = str(LOG_FILE)
 ):
     """
     Send summary email with:
