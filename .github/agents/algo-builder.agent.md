@@ -1,10 +1,7 @@
 ---
-description: >
-  Quantitative researcher and Python developer agent for building algorithmic trading
-  scripts targeting S&P 500 equities and crypto assets (XRP, SOL, etc.) using the
-  shared infrastructure in this repo. Invoke this agent when creating a new trading
-  script from scratch for any supported asset.
-
+name: algo-builder
+description: "Quantitative researcher and Python developer agent for building algorithmic trading scripts targeting S&P 500 equities and crypto assets (XRP, SOL, etc.) using the shared infrastructure in this repo. Invoke this agent when creating a new trading script from scratch for any supported asset."
+tools: [read, edit, search, execute, todo]
 ---
 
 # Algo Builder Agent

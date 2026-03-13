@@ -74,10 +74,6 @@ def load_portfolio_state(
     else:
         logger.info("No portfolio file found — using default state")
 
-    # Merge defaults without overwriting existing values
-    portfolio = DEFAULT_PORTFOLIO.copy()
-    # ... load from file and portfolio.update(loaded) ...
-
     # Defensive: ensure no keys went missing (type-ignore if needed)
     for key, value in DEFAULT_PORTFOLIO.items():
         portfolio.setdefault(key, value)  # type: ignore[attr-defined]
