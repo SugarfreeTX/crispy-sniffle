@@ -227,3 +227,6 @@ template/
 # temp script - remove once implemented in main codebase
 sending_emaiil_func.py
 trading_log_mar_dryrun.txt
+
+# test files 
+test_runs/
