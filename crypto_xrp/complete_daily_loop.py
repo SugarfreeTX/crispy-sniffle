@@ -9,13 +9,21 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, cast
 from dotenv import load_dotenv
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # NOTE: No pandas_market_calendars — crypto (XRP-USD) trades 24/7; NYSE calendar checks do not apply.
+
+# ── sys.path patch ─────────────────────────────────────────────────────────────
+# When invoked directly (`python crypto_xrp/complete_daily_loop.py`), Python adds
+# the script's directory to sys.path, not the repo root. Insert the repo root so
+# `shared.*` imports resolve correctly regardless of invocation method.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 # ── Shared infrastructure ──────────────────────────────────────────────────────
 from shared.types import PortfolioDict, MarketDataDict, PacketDict, TradeRecordDict
@@ -37,7 +45,7 @@ from shared.grok_decision import query_grok, parse_action
 XRP Crypto — Daily Trading Loop
 ────────────────────────────────
 How It Works:
-1. Loads current portfolio from saved state file (crypto_xrp/portfolio_state.json)
+1. Loads current portfolio from saved state file (shared/portfolio_state.json)
 2. Fetches XRP-USD data from Yahoo Finance (1 year daily candles)
 3. Computes indicators: RSI(14), ATR(14), ATR percentile, SMAs, regime, volume
 4. Applies local risk filters (auto-hold, drawdown, loss streak)
@@ -50,7 +58,7 @@ How It Works:
 BASE_DIR = Path(__file__).resolve().parent        # crypto_xrp/
 REPO_ROOT = BASE_DIR.parent                       # repo root
 LOG_FILE = BASE_DIR / "trading_log.txt"
-PORTFOLIO_FILE = BASE_DIR / "portfolio_state.json"
+PORTFOLIO_FILE = REPO_ROOT / "shared" / "portfolio_state.json"
 TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
 ENV_FILE = REPO_ROOT / ".env"
 FALLBACK_ENV_FILE = BASE_DIR / ".env"
@@ -487,3 +495,608 @@ def get_grok_decision(packet: PacketDict) -> Tuple[str, str]:
     action, reason = parse_action(response)
     logger.info(f"Grok decision: {action} | {reason}")
     return action, reason
+
+
+# ── Daily trade idempotency guard ──────────────────────────────────────────────
+
+def has_executed_trade_today() -> bool:
+    """
+    Return True if a live BUY or SELL was already recorded today in trade_history.json.
+
+    Prevents duplicate execution if the script runs more than once in a calendar day
+    (e.g. launchd retries, manual re-runs).
+
+    Returns:
+        True if a BUY/SELL_PARTIAL/SELL_FULL entry for today exists; False otherwise.
+    """
+    try:
+        if not TRADE_HISTORY_FILE.exists():
+            return False
+
+        with open(TRADE_HISTORY_FILE, "r") as f:
+            trade_history = json.load(f)
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        executed_actions = {"BUY", "SELL_PARTIAL", "SELL_FULL"}
+
+        for trade in reversed(trade_history):
+            timestamp = str(trade.get("timestamp", ""))
+            action = str(trade.get("action", "")).upper()
+            if timestamp.startswith(today_str) and action in executed_actions:
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"Unable to verify daily trade idempotency: {e}")
+        return False
+
+
+# ── Alpaca order placement ─────────────────────────────────────────────────────
+
+def place_alpaca_order(
+    api_key: str,
+    secret_key: str,
+    symbol: str,
+    qty: int,
+    side: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Submit a market order to the Alpaca paper trading API.
+
+    Crypto note: symbol must use the slash format (e.g. "XRP/USD").
+    Crypto orders require time_in_force="gtc" — "day" is not supported.
+
+    Args:
+        api_key: Alpaca API key ID.
+        secret_key: Alpaca secret key.
+        symbol: Alpaca crypto symbol (e.g. "XRP/USD").
+        qty: Integer token quantity.
+        side: "buy" or "sell" (case-insensitive).
+
+    Returns:
+        Alpaca order response dict, or None on failure.
+    """
+    url = "https://paper-api.alpaca.markets/v2/orders"
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": secret_key,
+        "Content-Type": "application/json",
+    }
+    order = {
+        "symbol": symbol,
+        "qty": str(qty),          # Alpaca crypto API expects qty as a string
+        "side": side.lower(),
+        "type": "market",
+        "time_in_force": "gtc",   # Crypto requires "gtc", not "day"
+    }
+    logger.info(f"Placing {side.upper()} order for {qty} {symbol} via Alpaca")
+
+    try:
+        r = requests.post(url, json=order, headers=headers, timeout=15)
+        r.raise_for_status()
+        result = r.json()
+        logger.info(f"Order placed successfully. Order ID: {result.get('id', 'Unknown')}")
+        return result
+    except requests.exceptions.Timeout:
+        logger.error("Alpaca API request timed out")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Alpaca API request failed: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Alpaca response as JSON: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error placing Alpaca order: {e}")
+        return None
+
+
+# ── Trade execution ────────────────────────────────────────────────────────────
+
+def execute_trade(
+    action: str,
+    reason: str,
+    packet: PacketDict,
+    api_key: Optional[str],
+    secret_key: Optional[str],
+    dry_run: bool = False,
+) -> bool:
+    """
+    Execute a BUY, SELL (partial or full), or HOLD decision for XRP-USD.
+
+    Guards applied in order:
+    1. ATR guardrails (execution-time, not just in the Grok prompt).
+    2. Max drawdown hard block.
+    3. Daily idempotency — one live BUY/SELL per calendar day.
+    4. Loss streak / can_open_new_position check (BUY only).
+
+    Portfolio state is reloaded from disk before writing to preserve fields that
+    are not present in the packet snapshot. On any critical failure the function
+    logs and returns False without retrying.
+
+    Crypto notes:
+    - portfolio["shares"] = integer XRP token quantity (not equity shares).
+    - cost_basis is price-per-token (6 decimal precision).
+    - Alpaca symbol must be "XRP/USD" (slash format required for crypto orders).
+    - Partial sell tiers mirror the MSFT script for consistency.
+
+    Args:
+        action: "BUY", "SELL", or "HOLD".
+        reason: Short explanation from Grok or a local safety guard.
+        packet: Full trading packet produced by fetch_xrp_daily().
+        api_key: Alpaca API key (may be None in dry-run mode).
+        secret_key: Alpaca secret key (may be None in dry-run mode).
+        dry_run: If True, simulate execution without touching Alpaca or saving state.
+
+    Returns:
+        True if the intended action was completed (or dry-run simulated); False on error.
+    """
+    price: float = packet["market_data"]["price"]
+    suggested_tokens: int = packet["market_data"]["suggested_position_size"]
+    portfolio = packet["portfolio"]
+    constraints = packet["constraints"]
+
+    cash: float = portfolio["cash"]
+    shares: int = portfolio["shares"]           # XRP token quantity
+    cost_basis: float = portfolio.get("cost_basis", 0.0)
+    current_drawdown_pct: float = portfolio.get("current_drawdown_pct", 0.0)
+    total_equity: float = portfolio.get("total_equity", cash)
+
+    logger.info(
+        "Executing action: %s | portfolio: $%.2f cash, %d XRP tokens, "
+        "equity: $%.2f, drawdown: %.2f%%",
+        action, cash, shares, total_equity, current_drawdown_pct,
+    )
+
+    # ── ATR guardrails ─────────────────────────────────────────────────────────
+    atr_14: float = packet.get("market_data", {}).get("atr_14", 0.0)
+    min_atr: float = constraints.get("min_atr", 0.0)
+    max_atr: float = constraints.get("max_atr", float("inf"))
+    if action in {"BUY", "SELL"} and not (min_atr <= atr_14 <= max_atr):
+        logger.warning(
+            "TRADE BLOCKED: ATR (%.5f) outside allowed range [%.5f, %.5f]",
+            atr_14, min_atr, max_atr,
+        )
+        if not dry_run:
+            log_trade(
+                "BLOCKED_ATR", 0, price,
+                f"ATR out of bounds: {atr_14}",
+                total_equity,
+                {"atr_14": atr_14, "min_atr": min_atr, "max_atr": max_atr, "requested_action": action},
+                trade_history_file=TRADE_HISTORY_FILE,
+            )
+        else:
+            logger.info("DRY-RUN: Would record BLOCKED_ATR event")
+        return False
+
+    # ── Max drawdown hard block ────────────────────────────────────────────────
+    max_drawdown_pct: float = constraints.get("max_drawdown_pct", 0.10) * 100
+    if current_drawdown_pct > max_drawdown_pct:
+        logger.warning(
+            "TRADE BLOCKED: Drawdown (%.2f%%) exceeds max allowed (%.2f%%)",
+            current_drawdown_pct, max_drawdown_pct,
+        )
+        if not dry_run:
+            log_trade(
+                "BLOCKED_DRAWDOWN", 0, price,
+                f"Drawdown too high: {current_drawdown_pct:.2f}%",
+                total_equity,
+                trade_history_file=TRADE_HISTORY_FILE,
+            )
+        else:
+            logger.info("DRY-RUN: Would record BLOCKED_DRAWDOWN event")
+        return False
+
+    # ── Daily idempotency guard ────────────────────────────────────────────────
+    if action in {"BUY", "SELL"} and not dry_run and has_executed_trade_today():
+        logger.warning("TRADE BLOCKED: A live BUY/SELL was already executed today")
+        log_trade(
+            "BLOCKED_DUPLICATE", 0, price,
+            "Duplicate daily trade prevented",
+            total_equity,
+            {"requested_action": action},
+            trade_history_file=TRADE_HISTORY_FILE,
+        )
+        return False
+
+    # ── BUY branch ─────────────────────────────────────────────────────────────
+    if action == "BUY":
+        allowed, block_reason = can_open_new_position(cast(PortfolioDict, portfolio), current_drawdown_pct)
+        if not allowed:
+            logger.warning("BUY BLOCKED: %s", block_reason)
+            if not dry_run:
+                log_trade(
+                    "BLOCKED_LOSS_STREAK", 0, price, block_reason, total_equity,
+                    trade_history_file=TRADE_HISTORY_FILE,
+                )
+            else:
+                logger.info("DRY-RUN: Would block BUY — %s", block_reason)
+            return False
+
+        max_affordable: int = int(cash // price)
+
+        # 20% of total equity position cap
+        max_position_value: float = total_equity * constraints.get("max_position_size_pct", 0.20)
+        current_position_value: float = shares * price
+        available_capacity: float = max_position_value - current_position_value
+        max_by_position_limit: int = int(available_capacity / price) if available_capacity > 0 else 0
+
+        qty: int = min(suggested_tokens, max_affordable, max_by_position_limit) if suggested_tokens > 0 else 0
+
+        # Loss-streak size multiplier
+        streak_multiplier: float = get_loss_streak_multiplier(cast(PortfolioDict, portfolio))
+        if streak_multiplier < 1.0:
+            logger.info(
+                "Loss streak %d → applying size multiplier %.2f",
+                portfolio.get("consecutive_loss_streak", 0), streak_multiplier,
+            )
+        qty = int(qty * streak_multiplier)
+
+        if qty < 1 and streak_multiplier > 0:
+            qty = 1   # Minimum probe position if multiplier still allows any size
+
+        if qty <= 0:
+            logger.warning("BUY reduced to 0 tokens due to constraints or loss streak")
+            if not dry_run:
+                log_trade(
+                    "BLOCKED_BUY", 0, price,
+                    "No capacity to buy (constraints / loss streak)",
+                    total_equity,
+                    trade_history_file=TRADE_HISTORY_FILE,
+                )
+            else:
+                logger.info("DRY-RUN: Would record BLOCKED_BUY event")
+            return False
+
+        logger.info(
+            "Position sizing: suggested=%d, affordable=%d, cap=%d, final=%d",
+            suggested_tokens, max_affordable, max_by_position_limit, qty,
+        )
+
+        if dry_run:
+            execution_price = float(price)
+            new_cash = cash - (qty * execution_price)
+            new_shares = shares + qty
+            new_cost_basis = (
+                ((shares * cost_basis) + (qty * execution_price)) / new_shares
+                if new_shares > 0 else 0.0
+            )
+            new_equity = new_cash + (new_shares * execution_price)
+            logger.info(
+                "DRY-RUN BUY: Would buy %d XRP at $%.6f | "
+                "cash: $%.2f → tokens: %d, cost_basis: $%.6f, equity: $%.2f",
+                qty, execution_price, new_cash, new_shares, new_cost_basis, new_equity,
+            )
+            return True
+
+        if not api_key or not secret_key:
+            logger.error("Missing Alpaca credentials for live BUY execution")
+            return False
+
+        result = place_alpaca_order(api_key, secret_key, "XRP/USD", qty, "buy")
+        if result:
+            fill_price_raw = result.get("filled_avg_price")
+            execution_price = float(fill_price_raw) if fill_price_raw is not None else float(price)
+
+            new_cash = cash - (qty * execution_price)
+            new_shares = shares + qty
+            new_cost_basis = (
+                ((shares * cost_basis) + (qty * execution_price)) / new_shares
+                if new_shares > 0 else 0.0
+            )
+
+            current_portfolio = load_portfolio_state(PORTFOLIO_FILE, ENV_FILE)
+            updated_portfolio: PortfolioDict = {
+                **current_portfolio,             # type: ignore[misc]
+                "cash": round(new_cash, 2),
+                "shares": new_shares,
+                "cost_basis": round(new_cost_basis, 6),
+            }
+            new_equity = new_cash + (new_shares * execution_price)
+            updated_portfolio["peak_value"] = max(
+                current_portfolio.get("peak_value", new_equity), new_equity
+            )
+
+            try:
+                save_portfolio_state(updated_portfolio, PORTFOLIO_FILE)
+                log_trade(
+                    "BUY", qty, execution_price, reason, new_equity,
+                    {
+                        "rsi_14": packet["market_data"]["rsi_14"],
+                        "atr_14": packet["market_data"]["atr_14"],
+                        "regime": packet["market_data"]["market_regime"],
+                    },
+                    trade_history_file=TRADE_HISTORY_FILE,
+                )
+                logger.info(
+                    "BUY executed: %d XRP at $%.6f | cash: $%.2f, tokens: %d",
+                    qty, execution_price, new_cash, new_shares,
+                )
+                return True
+            except Exception as e:
+                logger.critical(
+                    "CRITICAL: BUY executed but portfolio save failed: %s | "
+                    "Manual check required: bought %d XRP at $%.6f",
+                    e, qty, execution_price,
+                )
+                return False
+        else:
+            logger.error("BUY order failed — Alpaca returned no result")
+            return False
+
+    # ── SELL branch ────────────────────────────────────────────────────────────
+    elif action == "SELL":
+        if shares <= 0:
+            logger.warning("No XRP tokens to sell")
+            if not dry_run:
+                log_trade(
+                    "BLOCKED_SELL", 0, price, "No tokens to sell", total_equity,
+                    trade_history_file=TRADE_HISTORY_FILE,
+                )
+            else:
+                logger.info("DRY-RUN: Would record BLOCKED_SELL event")
+            return False
+
+        position_value = shares * price
+        unrealized_pnl = (price - cost_basis) * shares
+        unrealized_pnl_pct = round((unrealized_pnl / position_value) * 100, 2) if position_value > 0 else 0.0
+
+        # Partial sell tiers (mirror MSFT for consistency)
+        if unrealized_pnl_pct < 8.0:
+            sell_pct = 1.0          # Full exit if gain is small or a loss
+        elif unrealized_pnl_pct < 15.0:
+            sell_pct = 0.30         # 30% partial
+        elif unrealized_pnl_pct < 25.0:
+            sell_pct = 0.40         # 40% partial
+        else:
+            sell_pct = 0.60         # 60% at high gains
+
+        # Override to full exit in Bearish trend
+        trend_label: str = packet["market_data"].get("trend_label", "Unknown")
+        if "Bearish" in trend_label:
+            sell_pct = 1.0
+            reason += " (full exit — Bearish trend)"
+
+        qty = int(shares * sell_pct)
+        if qty < 1:
+            qty = shares   # Minimum full sell if fractional rounding gives 0
+
+        logger.info(
+            "SELL decision: unrealized PnL %.2f%%, trend: %s → selling %.0f%% (%d tokens)",
+            unrealized_pnl_pct, trend_label, sell_pct * 100, qty,
+        )
+
+        if dry_run:
+            execution_price = float(price)
+            new_cash = cash + (qty * execution_price)
+            realized_pnl = (execution_price - cost_basis) * qty
+            remaining_shares = max(shares - qty, 0)
+            new_cost_basis = cost_basis if remaining_shares > 0 else 0.0
+            new_equity = new_cash + (remaining_shares * execution_price)
+            logger.info(
+                "DRY-RUN SELL: Would sell %d XRP at $%.6f | "
+                "cash: $%.2f, remaining tokens: %d, realized PnL: $%.2f, equity: $%.2f",
+                qty, execution_price, new_cash, remaining_shares, realized_pnl, new_equity,
+            )
+            return True
+
+        if not api_key or not secret_key:
+            logger.error("Missing Alpaca credentials for live SELL execution")
+            return False
+
+        result = place_alpaca_order(api_key, secret_key, "XRP/USD", qty, "sell")
+        if result:
+            fill_price_raw = result.get("filled_avg_price")
+            execution_price = float(fill_price_raw) if fill_price_raw is not None else float(price)
+
+            new_cash = cash + (qty * execution_price)
+            realized_pnl = (execution_price - cost_basis) * qty
+            remaining_shares = shares - qty
+            new_cost_basis = cost_basis if remaining_shares > 0 else 0.0
+
+            current_portfolio = load_portfolio_state(PORTFOLIO_FILE, ENV_FILE)
+            updated_portfolio: PortfolioDict = {
+                **current_portfolio,             # type: ignore[misc]
+                "cash": round(new_cash, 2),
+                "shares": remaining_shares,
+                "cost_basis": round(new_cost_basis, 6),
+            }
+            new_equity = new_cash + (remaining_shares * execution_price)
+            updated_portfolio["peak_value"] = max(
+                current_portfolio.get("peak_value", new_equity), new_equity
+            )
+
+            # Update loss streak
+            was_win: bool = realized_pnl > 0
+            current_streak: int = current_portfolio.get("consecutive_loss_streak", 0)
+            new_streak: int = 0 if was_win else current_streak + 1
+            updated_portfolio["consecutive_loss_streak"] = new_streak
+
+            if was_win:
+                logger.info("Realized WIN → loss streak RESET to 0 (PnL: $%.2f)", realized_pnl)
+            else:
+                logger.info("Realized LOSS → streak now %d (PnL: $%.2f)", new_streak, realized_pnl)
+
+            try:
+                save_portfolio_state(updated_portfolio, PORTFOLIO_FILE)
+                log_trade(
+                    "SELL_PARTIAL" if sell_pct < 1.0 else "SELL_FULL",
+                    qty,
+                    execution_price,
+                    f"{reason} | PnL {unrealized_pnl_pct:.2f}% | Sold {sell_pct * 100:.0f}%",
+                    new_equity,
+                    {
+                        "realized_pnl": round(realized_pnl, 2),
+                        "remaining_shares": remaining_shares,
+                        "rsi_14": packet["market_data"]["rsi_14"],
+                        "atr_14": packet["market_data"]["atr_14"],
+                        "regime": packet["market_data"]["market_regime"],
+                        "loss_streak_after": new_streak,
+                        "was_win": was_win,
+                    },
+                    trade_history_file=TRADE_HISTORY_FILE,
+                )
+                logger.info(
+                    "SELL executed: %d XRP (%.0f%%) at $%.6f | "
+                    "realized PnL: $%.2f | remaining tokens: %d",
+                    qty, sell_pct * 100, execution_price, realized_pnl, remaining_shares,
+                )
+                return True
+            except Exception as e:
+                logger.critical(
+                    "CRITICAL: SELL executed but portfolio save failed: %s | "
+                    "Manual check required: sold %d XRP at $%.6f",
+                    e, qty, execution_price,
+                )
+                return False
+        else:
+            logger.error("SELL order failed — Alpaca returned no result")
+            return False
+
+    # ── HOLD branch ────────────────────────────────────────────────────────────
+    else:
+        logger.info("Holding position: %s — %s", action, reason)
+        if not dry_run:
+            log_trade(
+                "HOLD", 0, price, reason, total_equity,
+                {
+                    "rsi_14": packet["market_data"]["rsi_14"],
+                    "atr_14": packet["market_data"]["atr_14"],
+                    "regime": packet["market_data"]["market_regime"],
+                },
+                trade_history_file=TRADE_HISTORY_FILE,
+            )
+        else:
+            logger.info("DRY-RUN HOLD: No trade, no portfolio mutation")
+        return True
+
+
+# ── Main entry point ───────────────────────────────────────────────────────────
+
+def main(dry_run: bool = False) -> None:
+    """
+    Main XRP trading loop.
+
+    Steps:
+    1. Load environment and validate required API keys.
+    2. Fetch XRP-USD market data and build the trading packet.
+    3. Run the auto-hold guard + Grok decision via get_grok_decision().
+    4. Execute the trade via execute_trade().
+    5. Persist regime state to portfolio file.
+
+    Crypto note: no market-open or NYSE calendar check — XRP trades 24/7.
+    Email summary is intentionally omitted; this script runs every 4 hours and
+    email volume would be excessive.
+
+    Args:
+        dry_run: If True, simulate execution without placing orders or mutating state.
+    """
+    packet = None
+    action: Optional[str] = None
+    reason: Optional[str] = None
+
+    logger.info("=== Starting XRP Daily Trading Loop ===")
+    if dry_run:
+        logger.info("DRY-RUN MODE: No orders will be placed; state files will not be modified.")
+
+    # ── Environment and API key validation ────────────────────────────────────
+    load_env_with_fallback()
+
+    GROK_API_KEY = os.getenv("GROK_API_KEY")
+    ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+    ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+
+    if not GROK_API_KEY:
+        logger.error("GROK_API_KEY not found in environment. Check your .env file. Aborting.")
+        return
+
+    if not dry_run:
+        if not ALPACA_API_KEY:
+            logger.error("ALPACA_API_KEY not found in environment. Check your .env file. Aborting.")
+            return
+        if not ALPACA_SECRET_KEY:
+            logger.error("ALPACA_SECRET_KEY not found in environment. Check your .env file. Aborting.")
+            return
+
+    try:
+        # ── Step 1: Fetch market data ──────────────────────────────────────────
+        packet = fetch_xrp_daily()
+        if packet is None:
+            logger.error("Failed to fetch XRP-USD data. Aborting trading loop.")
+            return
+
+        # ── Step 2: Get decision (auto-hold guard + Grok) ─────────────────────
+        action, reason = get_grok_decision(packet)
+
+        # ── Step 3: Execute trade ──────────────────────────────────────────────
+        success = execute_trade(
+            action, reason, packet,
+            ALPACA_API_KEY, ALPACA_SECRET_KEY,
+            dry_run=dry_run,
+        )
+
+        # ── Step 4: Persist regime state ──────────────────────────────────────
+        if not dry_run:
+            updated_portfolio = load_portfolio_state(PORTFOLIO_FILE, ENV_FILE)
+            updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
+            updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
+            save_portfolio_state(updated_portfolio, PORTFOLIO_FILE)
+            logger.info(
+                "Regime persistence updated: %s (%d day(s))",
+                packet["market_data"]["market_regime"],
+                packet["market_data"]["regime_days_in_state"],
+            )
+
+        # ── Run summary line ───────────────────────────────────────────────────
+        dd_pct = packet["portfolio"].get("current_drawdown_pct", 0.0)
+        regime = packet["market_data"].get("market_regime", "Unknown")
+        days_in_regime = packet["market_data"].get("regime_days_in_state", 0)
+        logger.info(
+            "Run summary | Action: %s | Drawdown: %.1f%% | Regime: %s (%d days)",
+            action, dd_pct, regime, days_in_regime,
+        )
+
+        if success:
+            logger.info("=== XRP trading loop completed successfully ===")
+        else:
+            logger.warning("=== XRP trading loop completed with a non-fatal issue ===")
+
+    except KeyboardInterrupt:
+        logger.warning("KeyboardInterrupt (SIGINT) received — exiting early.")
+    except Exception:
+        logger.exception("Unexpected error in XRP main trading loop")
+
+    logger.info("=== XRP trading loop finished ===")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run XRP-USD trading loop (every 4 hours)")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate without placing orders or writing state files",
+    )
+    args = parser.parse_args()
+
+    TEST_DIR = BASE_DIR / "test_runs"
+    TEST_DIR.mkdir(exist_ok=True)
+
+    if args.dry_run:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        LOG_FILE = TEST_DIR / f"trading_log_dry_{ts}.txt"
+        TRADE_HISTORY_FILE = TEST_DIR / f"trade_history_dry_{ts}.json"
+    else:
+        LOG_FILE = BASE_DIR / "trading_log.txt"
+        TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
+
+    # Swap the file handler to point at the correct log file
+    # (logging.basicConfig already ran at module import time).
+    root_logger = logging.getLogger()
+    for h in root_logger.handlers[:]:
+        if isinstance(h, logging.FileHandler):
+            h.close()
+            root_logger.removeHandler(h)
+    root_logger.addHandler(logging.FileHandler(LOG_FILE))
+
+    logger.info("'%s': Logging to %s", "DRY-RUN" if args.dry_run else "LIVE", LOG_FILE)
+
+    main(dry_run=args.dry_run)

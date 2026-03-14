@@ -35,7 +35,7 @@ from typing import Optional
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
 LOG_FILE = BASE_DIR / "trading_log.txt"
-PORTFOLIO_FILE = BASE_DIR / "portfolio_state.json"
+PORTFOLIO_FILE = REPO_ROOT / "shared" / "portfolio_state.json"
 TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
 ENV_FILE = REPO_ROOT / ".env"
 FALLBACK_ENV_FILE = BASE_DIR / ".env"
