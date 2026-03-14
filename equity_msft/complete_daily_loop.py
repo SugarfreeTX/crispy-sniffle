@@ -1385,4 +1385,29 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    BASE_DIR = Path(__file__).resolve().parent
+    TEST_DIR = BASE_DIR / "test_runs"
+    TEST_DIR.mkdir(exist_ok=True)
+
+    if args.dry_run:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        LOG_FILE = TEST_DIR / f"trading_log_dry_{ts}.txt"
+        TRADE_HISTORY_FILE = TEST_DIR / f"trade_history_dry_{ts}.json"
+    else:
+        LOG_FILE = BASE_DIR / "trading_log.txt"
+        TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
+
+    # Reconfigure the file handler to point at the correct log file.
+    # logging.basicConfig already ran at import time, so we swap the handler here.
+    root_logger = logging.getLogger()
+    for h in root_logger.handlers[:]:
+        if isinstance(h, logging.FileHandler):
+            h.close()
+            root_logger.removeHandler(h)
+    root_logger.addHandler(logging.FileHandler(LOG_FILE))
+
+    logger.info(
+        f"{'DRY-RUN' if args.dry_run else 'LIVE'}: Logging to {LOG_FILE}"
+    )
+
     main(dry_run=args.dry_run, ignore_market_check=args.ignore_market_check)

@@ -1,0 +1,14 @@
+DRY-RUN: Logging to /Users/khemra/dev/crispy-sniffle/equity_msft/test_runs/trading_log_dry_20260314_110504.txt
+=== Starting Daily Trading Loop ===
+DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.
+Market check ignored via flag; continuing execution.
+Starting MSFT data fetch...
+Fetched Alpaca cash balance: $99961.94
+Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'initial_capital': 100000.0, 'peak_value': 100000.0, 'last_updated': '2026-03-13 17:15:01', 'last_regime': 'Normal', 'regime_days_in_state': 6, 'consecutive_loss_streak': 0, 'max_consecutive_losses': 5, 'last_trade_was_win': False}
+Fetching MSFT market data from Yahoo Finance...
+Data fresh: Last bar 2026-03-13
+Fetched Alpaca cash balance: $99961.94
+Loaded portfolio state: {'cash': 99961.94, 'shares': 0, 'cost_basis': 0.0, 'initial_capital': 100000.0, 'peak_value': 100000.0, 'last_updated': '2026-03-13 17:15:01', 'last_regime': 'Normal', 'regime_days_in_state': 6, 'consecutive_loss_streak': 0, 'max_consecutive_losses': 5, 'last_trade_was_win': False}
+Successfully fetched MSFT data. Price: $395.55, RSI: 59.2, ATR: 8.87, Regime: Normal, Suggested shares: 112, Rel Vol: 0.78 (Latest Vol: 26350249, Avg 20d: 33936822)
+AUTO-HOLD (local filter): Neutral RSI, Normal regime, low volume, no regime change | RSI=59.2, Regime=Normal, Rel Vol=0.78
+Daily summary email sent to khemra.keo@icloud.com
