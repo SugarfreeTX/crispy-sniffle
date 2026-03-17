@@ -4,6 +4,7 @@
 yfinance>=0.2.40
 pandas>=2.2.0
 pandas_market_calendars>=4.4.0
+backtesting>=0.3.3
 
 # API requests
 requests>=2.31.0

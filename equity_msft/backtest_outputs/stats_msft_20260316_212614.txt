@@ -1,0 +1,36 @@
+Start                     2018-01-02 00:00:00
+End                       2025-12-30 00:00:00
+Duration                   2919 days 00:00:00
+Exposure Time [%]                    89.75124
+Equity Final [$]                 174917.16435
+Equity Peak [$]                  185731.29909
+Commissions [$]                      114.9369
+Return [%]                           74.91716
+Buy & Hold Return [%]               467.16699
+Return (Ann.) [%]                      7.2617
+Volatility (Ann.) [%]                10.92435
+CAGR [%]                              4.94553
+Sharpe Ratio                          0.66473
+Sortino Ratio                         1.03734
+Calmar Ratio                          0.42463
+Alpha [%]                           -80.29497
+Beta                                  0.33224
+Max. Drawdown [%]                   -17.10134
+Avg. Drawdown [%]                    -1.32135
+Max. Drawdown Duration      573 days 00:00:00
+Avg. Drawdown Duration       26 days 00:00:00
+# Trades                                    1
+Win Rate [%]                            100.0
+Best Trade [%]                      375.47946
+Worst Trade [%]                     375.47946
+Avg. Trade [%]                      375.47946
+Max. Trade Duration        2623 days 00:00:00
+Avg. Trade Duration        2623 days 00:00:00
+Profit Factor                             NaN
+Expectancy [%]                      375.47946
+SQN                                       NaN
+Kelly Criterion                           NaN
+_strategy                 MSFTDailyBacktes...
+_equity_curve                             ...
+_trades                      Size  EntryBa...
+dtype: object
