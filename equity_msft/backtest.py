@@ -41,7 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-drawdown-pct", type=float, default=0.10, help="Hard drawdown stop as decimal")
     parser.add_argument("--min-atr", type=float, default=3.5, help="Minimum ATR required to trade")
     parser.add_argument("--max-atr", type=float, default=18.0, help="Maximum ATR allowed to trade")
-    parser.add_argument("--max-consecutive-losses", type=int, default=5, help="Loss streak entry block threshold")
+    parser.add_argument("--max-consecutive-losses", type=int, default=5, help="Loss streak entry block threshold (strategy class default=999; kept at 5 here for sweep backward compatibility)")
+    parser.add_argument("--regime-caution-days", type=int, default=18, help="Days in adverse regime before soft 0.90x size damper applies")
 
     # Threshold tuning knobs (single run or sweep baseline)
     parser.add_argument("--neutral-rsi-low", type=float, default=40.0, help="Neutral-zone lower RSI bound for auto-HOLD")
@@ -51,8 +52,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bearish-hold-rsi", type=float, default=38.0, help="Auto-HOLD in bearish trend below this RSI")
     parser.add_argument("--buy-pullback-rsi", type=float, default=46.0, help="BUY pullback trigger RSI cap in bullish trend")
     parser.add_argument("--sell-bearish-rsi", type=float, default=52.0, help="SELL trigger RSI floor in bearish trend")
-    parser.add_argument("--sell-overbought-rsi", type=float, default=74.0, help="SELL trigger RSI floor for overbought exits")
-    parser.add_argument("--take-profit-pnl-pct", type=float, default=8.0, help="Take-profit SELL trigger unrealized PnL percent")
+    parser.add_argument("--sell-overbought-rsi", type=float, default=88.0, help="SELL trigger RSI floor for overbought exits")
+    parser.add_argument("--take-profit-pnl-pct", type=float, default=7.0, help="Take-profit SELL trigger unrealized PnL percent")
     parser.add_argument("--take-profit-rsi", type=float, default=58.0, help="Take-profit SELL trigger RSI floor")
     parser.add_argument("--extreme-setup-rsi", type=float, default=30.0, help="Extreme setup RSI threshold")
     parser.add_argument("--extreme-setup-rel-vol", type=float, default=1.0, help="Extreme setup relative-volume threshold")
@@ -60,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     # Parameter sweep mode
     parser.add_argument("--sweep", action="store_true", help="Run parameter sweep instead of a single backtest")
     parser.add_argument("--sweep-buy-pullback-rsi", default="42,46,50", help="Comma-separated BUY pullback RSI values")
-    parser.add_argument("--sweep-sell-overbought-rsi", default="70,74,78", help="Comma-separated SELL overbought RSI values")
+    parser.add_argument("--sweep-sell-overbought-rsi", default="82,85,88", help="Comma-separated SELL overbought RSI values")
     parser.add_argument("--sweep-min-atr", default="0.5,1.5,2.5,3.5", help="Comma-separated minimum ATR values")
     parser.add_argument("--sweep-extreme-setup-rsi", default="25,30,35", help="Comma-separated extreme setup RSI values")
     parser.add_argument("--sweep-extreme-setup-rel-vol", default="0.9,1.0,1.1", help="Comma-separated extreme setup relative-volume values")
@@ -115,6 +116,7 @@ def build_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
         "min_atr": args.min_atr,
         "max_atr": args.max_atr,
         "max_consecutive_losses": args.max_consecutive_losses,
+        "regime_caution_days": args.regime_caution_days,
         "slippage_bps": args.slippage_bps,
         "neutral_rsi_low": args.neutral_rsi_low,
         "neutral_rsi_high": args.neutral_rsi_high,

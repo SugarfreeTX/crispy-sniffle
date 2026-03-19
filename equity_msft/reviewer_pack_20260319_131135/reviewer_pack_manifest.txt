@@ -1,0 +1,17 @@
+MSFT Reviewer Pack
+Generated: 2026-03-19 13:40:38
+Pack tag: 20260319_131135
+
+Counts from this rerun:
+- metrics: 15
+- equity: 15
+- trades: 15
+- stats: 15
+- sweep csv/json: 9
+
+Included files:
+- scenario_summary.csv (all metrics rows)
+- scenario_summary_latest.csv (latest per scenario)
+- sweep_best_summary.json
+- reviewer_pack_analysis.ipynb (if present)
+- data/msft_daily.csv (if present)

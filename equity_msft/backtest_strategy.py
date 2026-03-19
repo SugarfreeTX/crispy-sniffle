@@ -75,6 +75,21 @@ def should_auto_hold(
     return False, "No auto-hold rule triggered"
 
 
+# ── Backtest participation improvements (2026-03-17) ─────────────────────────
+# To reduce excessive cash drag in persistent adverse regimes while preserving
+# drawdown control, three changes were made (backtest only; live code unchanged):
+#   1. Regime size multipliers relaxed: High Vol 0.5→0.75, Elevated 0.75→1.0.
+#      Soft 0.90× damper applies after regime_caution_days=18 of persistent
+#      adverse regime instead of a hard HOLD block.
+#   2. max_consecutive_losses=999 disables the streak size gate at class level;
+#      get_loss_streak_multiplier() is bypassed via an explicit guard (it uses
+#      independent DEFAULT_STREAK_THRESHOLDS, not max_consecutive_losses).
+#      CLI --max-consecutive-losses default stays 5 for backward-compatible sweeps.
+#      sell_overbought_rsi raised 74→88; take_profit_pnl_pct tightened 8→7%
+#      so profit-target remains the primary exit trigger.
+#   3. 1-share probe floor in _execute_buy(): when all multipliers round a valid
+#      BUY signal to 0, trade exactly 1 share if cash and position limits allow.
+# ─────────────────────────────────────────────────────────────────────────────
 class MSFTDailyBacktestStrategy(Strategy):
     """Deterministic daily-bar strategy adapted from the live MSFT loop."""
 
@@ -84,7 +99,8 @@ class MSFTDailyBacktestStrategy(Strategy):
     min_atr = 3.5
     max_atr = 18.0
     slippage_bps = 5.0
-    max_consecutive_losses = 5
+    max_consecutive_losses = 999  # disabled for backtest; CLI sweep default stays 5
+    regime_caution_days = 18      # days before soft 0.90× damper in adverse regime
     history_window = 260
 
     # Tuned defaults for better short-window participation.
@@ -95,8 +111,8 @@ class MSFTDailyBacktestStrategy(Strategy):
     bearish_hold_rsi = 38.0
     buy_pullback_rsi = 46.0
     sell_bearish_rsi = 52.0
-    sell_overbought_rsi = 74.0
-    take_profit_pnl_pct = 8.0
+    sell_overbought_rsi = 88.0    # raised 74→88; take_profit_pnl_pct is the primary exit
+    take_profit_pnl_pct = 7.0     # tightened 8→7% to pair with relaxed overbought RSI
     take_profit_rsi = 58.0
     extreme_setup_rsi = 30.0
     extreme_setup_rel_vol = 1.0
@@ -165,10 +181,10 @@ class MSFTDailyBacktestStrategy(Strategy):
 
         if atr_expansion_ratio >= 2.0:
             regime = "High Volatility Regime"
-            regime_multiplier = 0.5
+            regime_multiplier = 0.75  # relaxed: was 0.5
         elif atr_expansion_ratio >= 1.5:
             regime = "Elevated Volatility"
-            regime_multiplier = 0.75
+            regime_multiplier = 1.0   # relaxed: was 0.75
         elif atr_expansion_ratio <= 0.5:
             regime = "Low Volatility"
             regime_multiplier = 1.0
@@ -181,6 +197,14 @@ class MSFTDailyBacktestStrategy(Strategy):
         else:
             self.last_regime = regime
             self.regime_days_in_state = 1
+
+        # Soft 0.90× damper after persistent adverse regime; entries still allowed.
+        # Hard HOLD only fires via should_auto_hold() at drawdown >= 8%.
+        if (
+            regime in ("High Volatility Regime", "Elevated Volatility")
+            and self.regime_days_in_state >= int(self.regime_caution_days)
+        ):
+            regime_multiplier *= 0.90
 
         trend = calculate_sma_trend(
             closes,
@@ -215,7 +239,13 @@ class MSFTDailyBacktestStrategy(Strategy):
             "consecutive_loss_streak": self.consecutive_loss_streak,
             "max_consecutive_losses": int(self.max_consecutive_losses),
         }
-        streak_multiplier = get_loss_streak_multiplier(streak_state)  # type: ignore[arg-type]
+        # Bypass when streak cap is disabled (max_consecutive_losses >= 999).
+        # DEFAULT_STREAK_THRESHOLDS in risk_management is independent of
+        # max_consecutive_losses, so must be explicitly bypassed here.
+        if int(self.max_consecutive_losses) >= 999:
+            streak_multiplier = 1.0
+        else:
+            streak_multiplier = get_loss_streak_multiplier(streak_state)  # type: ignore[arg-type]
 
         risk_amount = cash * float(self.risk_per_trade_pct)
         base_shares = int(risk_amount / (atr_14 * 2.0)) if atr_14 > 0 else 0
@@ -378,6 +408,10 @@ class MSFTDailyBacktestStrategy(Strategy):
         max_by_position_limit = int(available_position_capacity // price) if price > 0 else 0
 
         qty = min(suggested_shares, max_affordable, max_by_position_limit)
+        # Probe floor: multipliers may round a genuine BUY signal down to 0.
+        # Enforce 1-share minimum when base signal was positive and capacity allows.
+        if qty <= 0 and suggested_shares > 0 and max_affordable >= 1 and max_by_position_limit >= 1:
+            qty = 1
         if qty <= 0:
             return
 

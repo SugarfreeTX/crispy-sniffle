@@ -1,0 +1,31 @@
+{
+  "run_id": "20260319_133618",
+  "symbol": "MSFT",
+  "start": "2018-01-01",
+  "end": "2025-12-31",
+  "data_rows": 2010,
+  "total_combinations": 324,
+  "executed_runs": 324,
+  "ranking_pool": 324,
+  "ranking_filter_min_trades": 1,
+  "sort_by": "return_pct",
+  "best": {
+    "combo_index": 66.0,
+    "buy_pullback_rsi": 42.0,
+    "sell_overbought_rsi": 85.0,
+    "min_atr": 3.5,
+    "extreme_setup_rsi": 25.0,
+    "extreme_setup_rel_vol": 1.1,
+    "return_pct": 31.656382601783818,
+    "max_drawdown_pct": -4.534938879989337,
+    "max_drawdown_abs": 4.534938879989337,
+    "win_rate_pct": 46.32352941176471,
+    "profit_factor": 1.4489406543856362,
+    "sharpe_ratio": 0.9034319997881978,
+    "trade_count": 136.0
+  },
+  "paths": {
+    "all_results_csv": "/Users/khemra/dev/crispy-sniffle/equity_msft/backtest_outputs/sweep_results_msft_20260319_133618.csv",
+    "top_results_csv": "/Users/khemra/dev/crispy-sniffle/equity_msft/backtest_outputs/sweep_top_msft_20260319_133618.csv"
+  }
+}
