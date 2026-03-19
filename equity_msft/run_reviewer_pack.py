@@ -43,6 +43,17 @@ def parse_args() -> argparse.Namespace:
         help="Allow pack creation without notebook (default enforces notebook inclusion)",
     )
     parser.add_argument(
+        "--skip-notebook-execution",
+        action="store_true",
+        help="Copy notebook as-is instead of executing it against this run",
+    )
+    parser.add_argument(
+        "--notebook-timeout-sec",
+        type=int,
+        default=1200,
+        help="Notebook execution timeout in seconds",
+    )
+    parser.add_argument(
         "--sweep-sort-by",
         choices=["return_pct", "sharpe_ratio", "profit_factor", "trade_count", "max_drawdown_abs"],
         default="return_pct",
@@ -104,6 +115,42 @@ def _run_and_log(command: List[str], log_file: Path) -> None:
         return_code = process.wait()
         if return_code != 0:
             raise RuntimeError(f"Command failed ({return_code}): {joined}")
+
+
+def _execute_notebook_for_pack(
+    notebook_source: Path,
+    pack_dir: Path,
+    python_executable: str,
+    timeout_sec: int,
+    run_log: Path,
+) -> Path:
+    if timeout_sec <= 0:
+        raise RuntimeError("--notebook-timeout-sec must be > 0")
+
+    py = str(Path(python_executable).expanduser())
+    output_name = "reviewer_pack_analysis.ipynb"
+    command = [
+        py,
+        "-m",
+        "jupyter",
+        "nbconvert",
+        "--to",
+        "notebook",
+        "--execute",
+        str(notebook_source),
+        "--output",
+        output_name,
+        "--output-dir",
+        str(pack_dir),
+        f"--ExecutePreprocessor.timeout={timeout_sec}",
+    ]
+    _run_and_log(command, run_log)
+
+    executed_notebook = pack_dir / output_name
+    if not executed_notebook.exists():
+        raise RuntimeError(f"Notebook execution output missing: {executed_notebook}")
+    _validate_notebook(executed_notebook)
+    return executed_notebook
 
 
 def _scenario_commands(args: argparse.Namespace) -> List[List[str]]:
@@ -249,8 +296,24 @@ def _build_pack(args: argparse.Namespace) -> Dict[str, Path]:
 
     if DATA_PATH.exists():
         shutil.copy2(DATA_PATH, pack_dir / "data" / DATA_PATH.name)
+
+    notebook_manifest_line = "- reviewer_pack_analysis.ipynb (not included; --allow-missing-notebook set)"
     if notebook_source is not None:
-        shutil.copy2(notebook_source, pack_dir / "reviewer_pack_analysis.ipynb")
+        if args.skip_notebook_execution:
+            shutil.copy2(notebook_source, pack_dir / "reviewer_pack_analysis.ipynb")
+            notebook_manifest_line = (
+                "- reviewer_pack_analysis.ipynb "
+                "(copied source; execution skipped by --skip-notebook-execution)"
+            )
+        else:
+            _execute_notebook_for_pack(
+                notebook_source=notebook_source,
+                pack_dir=pack_dir,
+                python_executable=str(args.python_executable),
+                timeout_sec=int(args.notebook_timeout_sec),
+                run_log=run_log,
+            )
+            notebook_manifest_line = "- reviewer_pack_analysis.ipynb (executed during this run)"
 
     metrics_df = _read_metrics_rows((pack_dir / "backtest_outputs").glob("metrics_msft_*.json"))
     metrics_df["scenario"] = metrics_df.apply(_classify_scenario, axis=1)
@@ -283,11 +346,6 @@ def _build_pack(args: argparse.Namespace) -> Dict[str, Path]:
     }
 
     manifest = pack_dir / "reviewer_pack_manifest.txt"
-    notebook_manifest_line = (
-        "- reviewer_pack_analysis.ipynb"
-        if notebook_source is not None
-        else "- reviewer_pack_analysis.ipynb (not included; --allow-missing-notebook set)"
-    )
     manifest.write_text(
         "\n".join(
             [

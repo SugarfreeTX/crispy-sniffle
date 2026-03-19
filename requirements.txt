@@ -16,6 +16,11 @@ python-dotenv>=1.0.0
 instagrapi>=2.1.0
 Pillow>=10.3.0
 
+# Notebook execution for reviewer pack handoff
+nbconvert>=7.17.0
+nbformat>=5.10.0
+nbclient>=0.10.0
+
 # Standard library packages (already included in Python)
 # - json
 # - datetime
