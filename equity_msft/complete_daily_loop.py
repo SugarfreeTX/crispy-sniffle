@@ -663,63 +663,32 @@ def query_grok(packet: Dict[str, Any], api_key: str) -> Optional[Dict[str, Any]]
 
     prompt = f"""
 You are an automated trading decision agent.
-Your task is to analyze the provided JSON packet and choose exactly one action for the next trading day.
 
-Allowed actions:
-- BUY
-- SELL
-- HOLD
+Allowed actions: BUY, SELL, HOLD
 
-Decision rules:
-- Use only the data inside the JSON packet.
-- Evaluate price trend, volatility, volume, RSI(14), ATR(14), ATR percentile, market regime, and recent history.
-- CRITICAL: Respect the market_regime and regime_multiplier for position sizing - suggested_position_size already accounts for regime-based adjustments.
-- High Volatility Regime (ATR expansion > 200%): Position size automatically reduced to 50% to maintain consistent dollar risk.
-- Elevated Volatility (ATR expansion 150-200%): Position size reduced to 75%.
-- Use stop_loss_suggestion and take_profit_suggestion for risk management.
-- Avoid trading if ATR is outside min_atr/max_atr range (extreme volatility conditions).
-- Consider portfolio constraints: cash, shares, cost_basis, and risk limits.
-- Do not assume future prices or external market conditions.
-- Do not add commentary, disclaimers, or formatting.
-- If deciding to SELL and unrealized_pnl_pct > 0:
-  - In Bullish or Neutral trend: Consider partial exit if gains are meaningful.
-  - In Bearish trend: Recommend full exit (100%).
-- Output format remains the same, but you may include partial percentage in REASON if suggesting partial (e.g. "Partial sell recommended due to +18% unrealized gain in bullish trend").
+HARD BLOCKS (override all else):
+- drawdown_level >= 2 → HOLD or SELL only (never BUY)
+- loss_streak_multiplier <= 0.0 or consecutive_loss_streak >= max_consecutive_losses → HOLD or SELL only
+- drawdown_level == 1 → BUY only if RSI < 20 AND "Bullish" in trend_label AND suggested_position_size >= 1
 
-Additional trend filter (apply after core rules):
-- Strongly prefer BUY when trend_label indicates "Bullish" (or price_above_200_sma is true) and RSI is low/oversold.
-- Be very cautious with SELL signals when trend_label is "Bullish" — only consider if RSI is extremely overbought (>80) and other signals align strongly.
-- Exception: Consider BUY if RSI <25 AND relative_volume >1.2 (indicating strong oversold with above-average conviction/participation).
-- Use sma_50 and sma_200 values to assess how far price is from key levels if needed.
-- When signals conflict (e.g. oversold RSI but Bearish trend), prioritize trend_label over short-term RSI unless RSI is extreme (>80 or <20).
-- If trend_label is "Insufficient data" or sma_200 is None/null, default to HOLD regardless of other indicators.
+Core rules:
+- Respect suggested_position_size (already regime- & drawdown-adjusted) — never suggest larger.
+- Only BUY if suggested_position_size >= 1.
+- Prioritize trend_label over short-term RSI unless RSI <20 or >85.
+- Strongly prefer BUY in "Bullish" (or price_above_200_sma=True) + low/oversold RSI.
+- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold + Bullish.
+- If regime_days_in_state >= 10 and "Volatility" in market_regime → strongly prefer HOLD.
+- If regime_changed_today → extra caution on new entries.
+- For SELL with profit: approximate tiers (<8% full, 8-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
+- In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic 
+  (e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=18 + high volume in Bullish trend")
 
-- If regime_days_in_state >= 10 and market_regime contains "Volatility Regime", strongly prefer HOLD (prolonged stress regime).
-- If regime_changed_today is true, treat the regime as a fresh shift → be extra cautious, especially on new entries.
-- In "High Volatility Regime" or "Elevated Volatility", strongly prefer HOLD or very small positions (respect the already-reduced suggested_position_size) unless RSI < 20 AND trend_label is "Bullish".
-
-- consecutive_loss_streak shows current count of consecutive realized losses.
-- loss_streak_multiplier is the allowed fraction of normal BUY size (1.0 = full, 0.5 = half, 0.25 = quarter, 0.0 = no new buys).
-- Respect loss_streak_multiplier when suggesting BUY size; prefer HOLD/SELL if multiplier < 1.0 and conditions aren't exceptional.
-- Do NOT suggest BUY when streak >= max_consecutive_losses (currently 5).
-- drawdown_level (0=normal, 1=caution, 2=restricted, 3=emergency) indicates current drawdown severity. 
-- drawdown_status gives a human-readable name (e.g. "Caution (5-7.9%)", "Emergency (>10%)").
-- drawdown_size_multiplier is the maximum allowed fraction of normal position size (e.g. 0.5 = half size).
-- Drawdown rules (apply after regime rules): 
-    - If drawdown_level >= 2 (Restricted or Emergency), strongly prefer HOLD or partial/full exit -- DO NOT open new BUY positions. 
-    - If drawdown_level == 1 (Caution), be very conservative: favor HOLD, only consider small BUY if RSI extremely oversold (<20) in strong Bullish trend. 
-    - Always respect drawdown_size_multiplier when sizing any position. 
-    - Higher drawdown levels override other signals toward caution or defense. 
-
-Output format (must match exactly):
-
+Output format (exact, nothing else):
 ACTION: <BUY or SELL or HOLD>
 REASON: <one short sentence>
 
-No additional text. No markdown. No code blocks.
-
 Data packet:
-{json.dumps(packet)}
+{json.dumps(packet, indent=2)}
 """
 
     body = {
@@ -835,6 +804,48 @@ def can_open_new_position(portfolio: Dict[str, Any]) -> tuple[bool, str]:
         return False, f"Loss streak protection active ({streak}/{max_streak} consecutive losses) — new buys blocked"
     return True, "OK"
 
+def should_block_buy(packet: Dict) -> Tuple[bool, str]:
+    """
+    Final safety check — never allow BUY if hard rules are violated.
+    This runs after Grok's decision (or deterministic fallback).
+    """
+    port = packet.get("portfolio", {})
+    drawdown_level = port.get("drawdown_level", 0)
+    consecutive_losses = port.get("consecutive_loss_streak", 0)
+    max_losses = port.get("max_consecutive_losses", 5)
+    loss_multiplier = port.get("loss_streak_multiplier", 1.0)
+
+    if drawdown_level >= 2:
+        return True, "Blocked: drawdown_level >= 2 (Restricted or Emergency)"
+    
+    if loss_multiplier <= 0.0 or consecutive_losses >= max_losses:
+        return True, "Blocked: loss streak protection active"
+    
+    return False, ""
+
+def parse_sell_percentage(reason: str, packet: dict) -> float:
+    """Extract approximate sell % from Grok's reason if mentioned."""
+    import re
+    match = re.search(r'(?:sell|exit|reduce)\s*(?:about|around|roughly)?\s*(\d+)%?', reason, re.IGNORECASE)
+    if match:
+        try:
+            pct = float(match.group(1)) / 100.0
+            if 0.01 <= pct <= 1.0:
+                return pct
+        except:
+            pass
+    
+    # Default fallback tiers
+    unrealized_pct = packet["portfolio"].get("unrealized_pnl_pct", 0.0)
+    if unrealized_pct < 8.0:
+        return 1.0
+    elif unrealized_pct < 15.0:
+        return 0.30
+    elif unrealized_pct < 25.0:
+        return 0.40
+    else:
+        return 0.60
+    
 # Convert Grok's action into an Alpaca trade
 def execute_trade(
     action: str,
@@ -849,6 +860,7 @@ def execute_trade(
     suggested_shares = packet["market_data"]["suggested_position_size"]
     portfolio = packet["portfolio"]
     constraints = packet["constraints"]
+    sell_pct = parse_sell_percentage(reason, packet)
     
     cash = portfolio["cash"]
     shares = portfolio["shares"]
@@ -886,6 +898,14 @@ def execute_trade(
         else:
             logger.info("DRY-RUN: Would record BLOCKED_DRAWDOWN event")
         return False
+    
+    # Safety override: if Grok suggests BUY but we have hard reasons to block, override to HOLD
+    if action == "BUY":
+        blocked, block_reason = should_block_buy(packet)
+        if blocked:
+            action = "HOLD"
+            reason = f"{reason} | {block_reason} (safety override)"
+            logger.warning(f"SAFETY OVERRIDE: Grok suggested BUY but blocked → {block_reason}")
 
     # Idempotency guard: do not place more than one live trade per day.
     if action in {"BUY", "SELL"} and not dry_run and has_executed_trade_today():
@@ -894,7 +914,7 @@ def execute_trade(
             "requested_action": action
         })
         return False
-    
+
     # Consecutive loss streak protection
     if action == "BUY":
         # Consecutive loss streak protection
@@ -1016,6 +1036,14 @@ def execute_trade(
             else:
                 logger.info("DRY-RUN: Would record BLOCKED_SELL event")
             return False
+        # Calculate sell percentage
+        sell_pct = parse_sell_percentage(reason, packet)
+        sell_pct = min(1.0, max(0.01, sell_pct)) # Ensure between 1% and 100%
+        
+        qty = int(portfolio["shares"] * sell_pct)
+        if qty < 1 and portfolio["shares"] > 0:
+            qty = portfolio["shares"]  # avoid dust
+        qty = min(qty, shares) # cannot sell more than we have
 
         # Get current unrealized PnL % (re-calculate to be sure)
         position_value = shares * price
