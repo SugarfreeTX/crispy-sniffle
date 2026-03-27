@@ -420,7 +420,7 @@ def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
     # --- Regime and indicator-based rules (apply after drawdown is <5%) ------------------------
 
     # Rule 1: Neutral zone – most common auto-hold case
-    if (35 <= rsi <= 65 and
+    if (40 <= rsi <= 60 and
         regime == "Normal" and
         rel_vol <= 1.3 and
         not regime_changed):
@@ -432,11 +432,11 @@ def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
         return True, f"Drawdown at {drawdown_pct:.2f}% - approaching max drawdown limit"
 
     # Rule 3: Bullish but not oversold enough to justify buy
-    if "Bullish" in trend_label and rsi >= 58:  # not deep enough dip
+    if "Bullish" in trend_label and rsi >= 62:  # not deep enough dip
         return True, f"Bullish trend but RSI {rsi} not low enough for entry"
 
     # Rule 4: Bearish but not overbought enough for exit
-    if "Bearish" in trend_label and rsi <= 42:
+    if "Bearish" in trend_label and rsi <= 38:
         return True, f"Bearish trend but RSI {rsi} not high enough for exit"
 
     # Add more rules as you observe dry-runs (e.g. ATR too low/high)
@@ -516,10 +516,10 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
         # Determine market regime and position size multiplier
         if atr_expansion_ratio >= 2.0:
             regime = "High Volatility Regime"
-            regime_multiplier = 0.5  # Reduce position to 50%
+            regime_multiplier = 0.75  # relaxed: was 0.5
         elif atr_expansion_ratio >= 1.5:
             regime = "Elevated Volatility"
-            regime_multiplier = 0.75  # Reduce position to 75%
+            regime_multiplier = 1.0   # relaxed: was 0.75
         elif atr_expansion_ratio <= 0.5:
             regime = "Low Volatility"
             regime_multiplier = 1.0  # Keep normal position
@@ -537,6 +537,14 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
         else:
             regime_days = 1
             logger.info(f"Regime changed from {last_regime} to {regime}")
+
+        # Soft 0.90× damper after persistent adverse regime; entries still allowed.
+        # Hard HOLD only fires via should_auto_hold() at drawdown >= 8%.
+        if (
+            regime in ("High Volatility Regime", "Elevated Volatility")
+            and regime_days >= 18
+        ):
+            regime_multiplier *= 0.90
                 
         # Get current price
         current_price = round(float(latest["Close"]), 2)
@@ -674,12 +682,13 @@ HARD BLOCKS (override all else):
 Core rules:
 - Respect suggested_position_size (already regime- & drawdown-adjusted) — never suggest larger.
 - Only BUY if suggested_position_size >= 1.
-- Prioritize trend_label over short-term RSI unless RSI <20 or >85.
+- Prioritize trend_label over short-term RSI unless RSI <20 or >88.
 - Strongly prefer BUY in "Bullish" (or price_above_200_sma=True) + low/oversold RSI.
 - In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold + Bullish.
-- If regime_days_in_state >= 10 and "Volatility" in market_regime → strongly prefer HOLD.
+- If regime_days_in_state >= 18 and "Volatility" in market_regime → prefer reduced size (soft damper active), not necessarily a hard HOLD.
 - If regime_changed_today → extra caution on new entries.
-- For SELL with profit: approximate tiers (<8% full, 8-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
+- SELL when RSI >= 88 (overbought) or unrealized profit >= 7% with RSI >= 58 (take-profit trigger).
+- For SELL with profit: approximate tiers (<7% full, 7-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
 - In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic 
   (e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=18 + high volume in Bullish trend")
 
@@ -946,10 +955,12 @@ def execute_trade(
             if streak_multiplier < 1.0:
                 logger.info(f"Loss streak {portfolio['consecutive_loss_streak']} → applying size multiplier {streak_multiplier}")
             qty = int(qty * streak_multiplier)
-            
-            if qty < 1 and streak_multiplier > 0:
-                qty = 1  # Optional: minimum 1 share probe if multiplier allows any size
-            
+
+            # Probe floor: multipliers may round a genuine BUY signal down to 0.
+            # Enforce 1-share minimum when base signal was positive and capacity allows.
+            if qty <= 0 and suggested_shares > 0 and max_affordable >= 1 and max_by_position_limit >= 1:
+                qty = 1
+
             if qty <= 0:
                 logger.warning(f"BUY reduced to 0 shares due to loss streak protection")
                 if not dry_run:
