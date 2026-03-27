@@ -1411,8 +1411,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Bypass market open/holiday check (useful for weekend dry-runs)"
     )
+    parser.add_argument(
+    "--shadow-grok",
+    action="store_true",
+    help="Query Grok every day in dry-run mode and log both deterministic + Grok decisions (no execution)"
+    )
     args = parser.parse_args()
-
+    shadow_mode = args.shadow_grok and args.dry_run  # only active in dry-run
+    
     BASE_DIR = Path(__file__).resolve().parent
     TEST_DIR = BASE_DIR / "test_runs"
     TEST_DIR.mkdir(exist_ok=True)
