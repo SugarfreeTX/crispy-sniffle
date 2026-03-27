@@ -436,8 +436,8 @@ def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
         return True, f"Bullish trend but RSI {rsi} not low enough for entry"
 
     # Rule 4: Bearish but not overbought enough for exit
-    if "Bearish" in trend_label and rsi <= 38:
-        return True, f"Bearish trend but RSI {rsi} not high enough for exit"
+    if "Bearish" in trend_label and rsi <= 28.0:   # lowered from 38 → 28
+        return True, f"Bearish trend but RSI {rsi:.1f} not high enough for exit"
 
     # Add more rules as you observe dry-runs (e.g. ATR too low/high)
     return False, "No auto-hold rule triggered"
@@ -669,7 +669,7 @@ def query_grok(packet: Dict[str, Any], api_key: str) -> Optional[Dict[str, Any]]
         "Content-Type": "application/json"
     }
 
-    prompt = f"""
+    prompt = fprompt = f"""
 You are an automated trading decision agent.
 
 Allowed actions: BUY, SELL, HOLD
@@ -682,15 +682,17 @@ HARD BLOCKS (override all else):
 Core rules:
 - Respect suggested_position_size (already regime- & drawdown-adjusted) — never suggest larger.
 - Only BUY if suggested_position_size >= 1.
-- Prioritize trend_label over short-term RSI unless RSI <20 or >88.
+- Prioritize trend_label over short-term RSI unless RSI is extreme (<25 or >88).
 - Strongly prefer BUY in "Bullish" (or price_above_200_sma=True) + low/oversold RSI.
-- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold + Bullish.
-- If regime_days_in_state >= 18 and "Volatility" in market_regime → prefer reduced size (soft damper active), not necessarily a hard HOLD.
+- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold (RSI < 25) + Bullish.
+- If regime_days_in_state >= 18 and "Volatility" in market_regime → prefer reduced size (soft damper active).
 - If regime_changed_today → extra caution on new entries.
-- SELL when RSI >= 88 (overbought) or unrealized profit >= 7% with RSI >= 58 (take-profit trigger).
+- SELL when RSI >= 88 (overbought) or unrealized_pnl_pct >= 7% with RSI >= 58 (take-profit trigger).
 - For SELL with profit: approximate tiers (<7% full, 7-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
-- In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic 
-  (e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=18 + high volume in Bullish trend")
+- Extreme oversold (RSI < 25) can still justify a BUY even in a Bearish trend if drawdown is low (<2%) and suggested_position_size is valid.
+
+In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic 
+(e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=8.8 in Bearish trend").
 
 Output format (exact, nothing else):
 ACTION: <BUY or SELL or HOLD>
@@ -862,7 +864,8 @@ def execute_trade(
     packet: Dict[str, Any],
     api_key: Optional[str],
     secret_key: Optional[str],
-    dry_run: bool = False
+    dry_run: bool = False,
+    shadow_mode: bool = False,
 ) -> bool:
     """Execute trade based on Grok decision with comprehensive validation and portfolio update"""
     price = packet["market_data"]["price"]
@@ -878,6 +881,11 @@ def execute_trade(
     total_equity = portfolio.get("total_equity", cash)
     
     logger.info(f"Executing action: {action} | Current portfolio: ${cash:.2f} cash, {shares} shares, Equity: ${total_equity:.2f}, Drawdown: {current_drawdown_pct:.2f}%")
+
+    # Shadow mode safety net: should never reach here, but block execution just in case.
+    if shadow_mode:
+        logger.warning("execute_trade() called in shadow_mode — blocking execution (bug guard)")
+        return False
 
     # Enforce ATR guardrails at execution time (not just in model prompt)
     atr_14 = packet.get("market_data", {}).get("atr_14", 0.0)
@@ -1298,7 +1306,7 @@ def send_email_summary(
         logger.error(f"Failed to send summary email: {e}")
 
 
-def main(dry_run: bool = False, ignore_market_check: bool = False):
+def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: bool = False):
     """Main trading loop with comprehensive error handling and logging"""
     packet = None
     action = None
@@ -1340,8 +1348,9 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
             logger.error("Failed to fetch market data. Aborting trading loop.")
             action = "SKIPPED"
             return
+        # Check local deterministic filters before calling Grok
         auto_hold, reason = should_auto_hold(packet)
-        if auto_hold:
+        if auto_hold and not shadow_mode:
             logger.info(f"AUTO-HOLD (local filter): {reason} | RSI={packet['market_data']['rsi_14']:.1f}, Regime={packet['market_data']['market_regime']}, Rel Vol={packet['market_data']['relative_volume']:.2f}")
             price = packet["market_data"]["price"]
             total_equity = packet["portfolio"].get("total_equity", packet["portfolio"]["cash"])
@@ -1365,16 +1374,55 @@ def main(dry_run: bool = False, ignore_market_check: bool = False):
                 updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
                 save_portfolio_state(updated_portfolio)
             return  # Skip Grok and execution
-        # Step 2: Get AI decision
+        if auto_hold and shadow_mode:
+            logger.info(f"AUTO-HOLD (would fire, but shadow_mode — querying Grok anyway): {reason}")
+        # ── Step 2: Query Grok (single call, reused by both shadow and normal) ──
+        grok_action = None
+        grok_reason = None
+        grok_success = False
+
         response = query_grok(packet, GROK_API_KEY)
-        if response is None:
+        if response is not None:
+            grok_action, grok_reason = parse_action(response)
+            grok_success = True
+        else:
+            grok_reason = "Grok query failed"
+
+        # ── Shadow mode: log Grok's decision then exit without executing ──
+        if shadow_mode:
+            log_entry = {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "deterministic_action": "HOLD" if auto_hold else "GROK_DECIDED",
+                "deterministic_reason": reason,
+                "grok_action": grok_action,
+                "grok_reason": grok_reason,
+                "shadow_mode": True,
+                "executed": False,
+                "packet_summary": {
+                    "rsi": packet["market_data"].get("rsi_14"),
+                    "regime": packet["market_data"].get("market_regime"),
+                    "drawdown_pct": packet["portfolio"].get("current_drawdown_pct"),
+                    "unrealized_pct": packet["portfolio"].get("unrealized_pnl_pct"),
+                }
+            }
+            shadow_log_path = BASE_DIR / "shadow_grok_log.jsonl"
+            with open(shadow_log_path, "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+            action = grok_action if grok_success else "HOLD"
+            reason = grok_reason if grok_success else "Grok unavailable - default HOLD"
+            logger.info(f"SHADOW-MODE: Grok says {action} — {reason} (no execution)")
+            return  # shadow mode: log only, no execution
+
+        # Normal mode: use Grok result for execution
+        if not grok_success:
             logger.error("Failed to get response from Grok. Aborting trading loop.")
             action = "SKIPPED"
             return
-        action, reason = parse_action(response)
+        action, reason = grok_action, grok_reason
         logger.info(f"Grok decision: {action} - {reason}")
         # Step 3: Execute trade
-        success = execute_trade(action, reason, packet, ALPACA_API_KEY, ALPACA_SECRET_KEY, dry_run=dry_run)
+        assert action is not None  # guaranteed: we returned early if grok_success was False
+        success = execute_trade(action, reason, packet, ALPACA_API_KEY, ALPACA_SECRET_KEY, dry_run=dry_run, shadow_mode=shadow_mode)
         if packet is not None and not dry_run:
             updated_portfolio = load_portfolio_state()
             updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
@@ -1455,4 +1503,4 @@ if __name__ == "__main__":
         f"{'DRY-RUN' if args.dry_run else 'LIVE'}: Logging to {LOG_FILE}"
     )
 
-    main(dry_run=args.dry_run, ignore_market_check=args.ignore_market_check)
+    main(dry_run=args.dry_run, ignore_market_check=args.ignore_market_check, shadow_mode=shadow_mode)
