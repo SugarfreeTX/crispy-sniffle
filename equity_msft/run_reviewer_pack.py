@@ -288,9 +288,6 @@ def _build_pack(args: argparse.Namespace) -> Dict[str, Path]:
         [p for p in BACKTEST_OUTPUTS.glob("*") if p.is_file() and p.stat().st_mtime > marker_mtime]
     )
 
-    new_files_txt = pack_dir / "new_files.txt"
-    new_files_txt.write_text("\n".join(str(p) for p in new_files) + "\n", encoding="utf-8")
-
     for path in new_files:
         shutil.copy2(path, pack_dir / "backtest_outputs" / path.name)
 
@@ -319,23 +316,6 @@ def _build_pack(args: argparse.Namespace) -> Dict[str, Path]:
     metrics_df["scenario"] = metrics_df.apply(_classify_scenario, axis=1)
     metrics_df.to_csv(pack_dir / "scenario_summary.csv", index=False)
 
-    latest_df = (
-        metrics_df.sort_values("run_id")
-        .groupby("scenario", as_index=False)
-        .tail(1)
-        .sort_values("scenario")
-        .reset_index(drop=True)
-    )
-    latest_df.to_csv(pack_dir / "scenario_summary_latest.csv", index=False)
-
-    sweep_best_files = sorted((pack_dir / "backtest_outputs").glob("sweep_best_msft_*.json"))
-    sweep_best_summary: Dict[str, Any] = {}
-    if sweep_best_files:
-        sweep_best_summary = json.loads(sweep_best_files[-1].read_text(encoding="utf-8"))
-    (pack_dir / "sweep_best_summary.json").write_text(
-        json.dumps(sweep_best_summary, indent=2), encoding="utf-8"
-    )
-
     counts = {
         "metrics": len(list((pack_dir / "backtest_outputs").glob("metrics_msft_*.json"))),
         "equity": len(list((pack_dir / "backtest_outputs").glob("equity_msft_*.csv"))),
@@ -362,8 +342,7 @@ def _build_pack(args: argparse.Namespace) -> Dict[str, Path]:
                 "",
                 "Included files:",
                 "- scenario_summary.csv (all metrics rows)",
-                "- scenario_summary_latest.csv (latest per scenario)",
-                "- sweep_best_summary.json",
+                "- backtest_outputs/sweep_best_msft_*.json (sweep best config, if sweep ran)",
                 notebook_manifest_line,
                 "- data/msft_daily.csv (if present)",
             ]
