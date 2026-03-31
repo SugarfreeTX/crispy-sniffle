@@ -1,0 +1,17 @@
+XRP Reviewer Pack
+Generated: 2026-03-31 15:25:44
+Pack tag: 20260331_150035
+
+Counts from this rerun:
+- metrics: 11
+- equity: 11
+- trades: 11
+- stats: 11
+- sweep csv/json: 3
+
+Included files:
+- scenario_summary.csv (all metrics rows)
+- scenario_summary_latest.csv (latest per scenario)
+- sweep_best_summary.json
+- reviewer_pack_analysis.ipynb (executed during this run)
+- data/xrp_daily.csv (if present)
