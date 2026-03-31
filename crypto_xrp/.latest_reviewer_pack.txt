@@ -1,0 +1,4 @@
+PACK_TAG=20260331_105850
+PACK_DIR=/Users/khemra/dev/crispy-sniffle/crypto_xrp/reviewer_pack_20260331_105850
+ZIP_PATH=/Users/khemra/dev/crispy-sniffle/crypto_xrp/reviewer_pack_20260331_105850.zip
+MANIFEST=/Users/khemra/dev/crispy-sniffle/crypto_xrp/reviewer_pack_20260331_105850/reviewer_pack_manifest.txt

@@ -1,0 +1,36 @@
+Start                     2022-01-01 00:00:00
+End                       2023-12-31 00:00:00
+Duration                    729 days 00:00:00
+Exposure Time [%]                        60.0
+Equity Final [$]                  86520.98407
+Equity Peak [$]                  101270.79105
+Commissions [$]                     159.02787
+Return [%]                          -13.47902
+Buy & Hold Return [%]               -27.60903
+Return (Ann.) [%]                    -6.98334
+Volatility (Ann.) [%]                14.92257
+CAGR [%]                             -6.99258
+Sharpe Ratio                         -0.46797
+Sortino Ratio                         -0.5169
+Calmar Ratio                         -0.30562
+Alpha [%]                            -16.6148
+Beta                                 -0.11358
+Max. Drawdown [%]                   -22.84964
+Avg. Drawdown [%]                    -8.05488
+Max. Drawdown Duration      422 days 00:00:00
+Avg. Drawdown Duration      146 days 00:00:00
+# Trades                                    6
+Win Rate [%]                         33.33333
+Best Trade [%]                        2.70146
+Worst Trade [%]                     -59.87705
+Avg. Trade [%]                      -16.33764
+Max. Trade Duration         390 days 00:00:00
+Avg. Trade Duration          73 days 00:00:00
+Profit Factor                         0.05364
+Expectancy [%]                      -12.35392
+SQN                                  -1.40353
+Kelly Criterion                    -549.14509
+_strategy                 XRPDailyBacktest...
+_equity_curve                             ...
+_trades                       Size  EntryB...
+dtype: object

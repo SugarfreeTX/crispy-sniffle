@@ -1,0 +1,31 @@
+{
+  "run_id": "20260331_112312",
+  "symbol": "XRP-USD",
+  "start": "2018-01-01",
+  "end": "2025-12-31",
+  "data_rows": 2921,
+  "total_combinations": 324,
+  "executed_runs": 324,
+  "ranking_pool": 324,
+  "ranking_filter_min_trades": 1,
+  "sort_by": "return_pct",
+  "best": {
+    "combo_index": 324.0,
+    "buy_pullback_rsi": 52.0,
+    "sell_overbought_rsi": 85.0,
+    "min_atr": 0.01,
+    "extreme_setup_rsi": 30.0,
+    "extreme_setup_rel_vol": 1.2,
+    "return_pct": 72.5298048488031,
+    "max_drawdown_pct": -26.9714398313196,
+    "max_drawdown_abs": 26.9714398313196,
+    "win_rate_pct": 49.193548387096776,
+    "profit_factor": 2.538857929839258,
+    "sharpe_ratio": 0.4461236811826304,
+    "trade_count": 124.0
+  },
+  "paths": {
+    "all_results_csv": "/Users/khemra/dev/crispy-sniffle/crypto_xrp/backtest_outputs/sweep_results_xrp_usd_20260331_112312.csv",
+    "top_results_csv": "/Users/khemra/dev/crispy-sniffle/crypto_xrp/backtest_outputs/sweep_top_xrp_usd_20260331_112312.csv"
+  }
+}
