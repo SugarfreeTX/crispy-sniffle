@@ -230,3 +230,8 @@ trading_log_mar_dryrun.txt
 
 # test files 
 test_runs/
+
+# xrp files 
+crypto_xrp/xrp_vectorbt_best.py
+crypto_xrp/xrp_vectorbt_trend.py
+crypto_xrp/xrp_walkforward_results.csv
