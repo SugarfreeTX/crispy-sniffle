@@ -436,7 +436,7 @@ def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
         return True, f"Bullish trend but RSI {rsi} not low enough for entry"
 
     # Rule 4: Bearish but not overbought enough for exit
-    if "Bearish" in trend_label and rsi <= 28.0:   # lowered from 38 → 28
+    if "Bearish" in trend_label and rsi <= 22.0:   # lowered from 28 → 22
         return True, f"Bearish trend but RSI {rsi:.1f} not high enough for exit"
 
     # Add more rules as you observe dry-runs (e.g. ATR too low/high)
@@ -669,7 +669,7 @@ def query_grok(packet: Dict[str, Any], api_key: str) -> Optional[Dict[str, Any]]
         "Content-Type": "application/json"
     }
 
-    prompt = fprompt = f"""
+    prompt = f"""
 You are an automated trading decision agent.
 
 Allowed actions: BUY, SELL, HOLD
@@ -677,21 +677,21 @@ Allowed actions: BUY, SELL, HOLD
 HARD BLOCKS (override all else):
 - drawdown_level >= 2 → HOLD or SELL only (never BUY)
 - loss_streak_multiplier <= 0.0 or consecutive_loss_streak >= max_consecutive_losses → HOLD or SELL only
-- drawdown_level == 1 → BUY only if RSI < 20 AND "Bullish" in trend_label AND suggested_position_size >= 1
+- drawdown_level == 1 → BUY only if RSI < 22 AND "Bullish" in trend_label AND suggested_position_size >= 1
 
 Core rules:
 - Respect suggested_position_size (already regime- & drawdown-adjusted) — never suggest larger.
 - Only BUY if suggested_position_size >= 1.
-- Prioritize trend_label over short-term RSI unless RSI is extreme (<25 or >88).
+- Prioritize trend_label over short-term RSI unless RSI is extreme (<22 or >88).
 - Strongly prefer BUY in "Bullish" (or price_above_200_sma=True) + low/oversold RSI.
-- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold (RSI < 25) + Bullish.
+- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold (RSI < 22) + Bullish.
 - If regime_days_in_state >= 18 and "Volatility" in market_regime → prefer reduced size (soft damper active).
 - If regime_changed_today → extra caution on new entries.
-- SELL when RSI >= 88 (overbought) or unrealized_pnl_pct >= 7% with RSI >= 58 (take-profit trigger).
+- SELL on RSI >= 88 (overbought) regardless of trend.
 - For SELL with profit: approximate tiers (<7% full, 7-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
-- Extreme oversold (RSI < 25) can still justify a BUY even in a Bearish trend if drawdown is low (<2%) and suggested_position_size is valid.
+- Extreme oversold (RSI < 22) can still justify a BUY even in a Bearish trend if drawdown is low (<2%) and suggested_position_size is valid.
 
-In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic 
+In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic
 (e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=8.8 in Bearish trend").
 
 Output format (exact, nothing else):
