@@ -1,0 +1,48 @@
+{
+  "input_csv": "/Users/khemra/dev/crispy-sniffle/crypto_xrp/data/xrp_4h.csv",
+  "output_csv": "/Users/khemra/dev/crispy-sniffle/crypto_xrp/data/xrp_4h_clean.csv",
+  "issues_csv": "/Users/khemra/dev/crispy-sniffle/crypto_xrp/data/xrp_4h_issues.csv",
+  "rows_input": 4373,
+  "rows_output": 4373,
+  "rows_removed": 0,
+  "date_min_input": "2024-04-03T00:00:00+00:00",
+  "date_max_input": "2026-04-02T16:00:00+00:00",
+  "date_min_output": "2024-04-03T00:00:00+00:00",
+  "date_max_output": "2026-04-02T16:00:00+00:00",
+  "issue_counts": {
+    "nan_any": 0,
+    "non_positive_price": 0,
+    "high_lt_low": 0,
+    "high_lt_open_or_close": 0,
+    "low_gt_open_or_close": 0,
+    "non_positive_volume": 1079,
+    "return_outlier": 20
+  },
+  "interval_report": {
+    "expected_freq_hours": 4,
+    "non_standard_delta_count": 2,
+    "missing_bar_count": 6,
+    "missing_timestamps": [
+      "2025-10-28T04:00:00+00:00",
+      "2025-10-28T08:00:00+00:00",
+      "2025-11-29T00:00:00+00:00",
+      "2025-11-29T04:00:00+00:00",
+      "2025-11-29T08:00:00+00:00",
+      "2025-11-29T12:00:00+00:00"
+    ],
+    "non_standard_jumps": [
+      {
+        "previous_timestamp": "2025-10-28T00:00:00+00:00",
+        "current_timestamp": "2025-10-28T12:00:00+00:00",
+        "gap": "0 days 12:00:00"
+      },
+      {
+        "previous_timestamp": "2025-11-28T20:00:00+00:00",
+        "current_timestamp": "2025-11-29T16:00:00+00:00",
+        "gap": "0 days 20:00:00"
+      }
+    ]
+  },
+  "drop_zero_volume": false,
+  "zscore_threshold": 5.0
+}

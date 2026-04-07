@@ -1,0 +1,21 @@
+XRP v2 Confirmation Walk-Forward Summary
+Scheme: train=540d, test=120d, step=60d
+
+Config: updated_defaults_12_42_90_sl1.2_tp5
+  Windows: 2 | Positive: 2 | Negative: 0
+  Avg OOS Return: 1.0399%
+  Median OOS Return: 1.0399%
+  Avg OOS Drawdown: 1.7093%
+  Avg OOS Sharpe: 0.9065
+  Avg OOS Profit Factor: 1.3829
+  Avg OOS Trades: 19.00
+
+Config: prior_defaults_12_36_90_sl1.8_tp8
+  Windows: 2 | Positive: 1 | Negative: 1
+  Avg OOS Return: 0.7181%
+  Median OOS Return: 0.7181%
+  Avg OOS Drawdown: 1.9557%
+  Avg OOS Sharpe: 0.6366
+  Avg OOS Profit Factor: 1.2518
+  Avg OOS Trades: 18.00
+

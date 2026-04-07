@@ -1,0 +1,3 @@
+config,train_days,test_days,step_days,windows,positive_windows,negative_windows,avg_oos_return_pct,median_oos_return_pct,avg_oos_drawdown_pct,avg_oos_sharpe,avg_oos_profit_factor,avg_oos_trades
+updated_defaults_12_42_90_sl1.2_tp5,540,120,60,2,2,0,1.0398512294663151,1.0398512294663151,1.7092660657325358,0.9064588326139912,1.382902921767612,19.0
+prior_defaults_12_36_90_sl1.8_tp8,540,120,60,2,1,1,0.7181111956324693,0.7181111956324693,1.9556844065325092,0.6365823191589072,1.2518073429682421,18.0
