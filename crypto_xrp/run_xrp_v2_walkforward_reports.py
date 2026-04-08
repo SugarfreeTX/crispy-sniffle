@@ -19,9 +19,9 @@ def load_strategy_module():
     """Load the v2 strategy module from file."""
 
     spec = importlib.util.spec_from_file_location("xrp_v2", STRATEGY_FILE)
-    module = importlib.util.module_from_spec(spec)
     if spec is None or spec.loader is None:
         raise RuntimeError("Unable to load xrp_vectorbt_best_v2.py")
+    module = importlib.util.module_from_spec(spec)
     sys.modules["xrp_v2"] = module
     spec.loader.exec_module(module)
     return module

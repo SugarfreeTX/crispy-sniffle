@@ -204,6 +204,9 @@ def main() -> None:
     pf = run_backtest(data, cfg)
 
     stats = pf.stats()
+    if stats is None:
+        raise ValueError("Portfolio stats could not be generated. Ensure the portfolio contains valid data.")
+
     print(f"Using data: {csv_path}")
     print(stats)
 
