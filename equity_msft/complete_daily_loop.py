@@ -436,7 +436,7 @@ def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
         return True, f"Bullish trend but RSI {rsi} not low enough for entry"
 
     # Rule 4: Bearish but not overbought enough for exit
-    if "Bearish" in trend_label and rsi <= 22.0:   # lowered from 28 → 22
+    if "Bearish" in trend_label and rsi <= 20.0:   # lowered from 22 → 20
         return True, f"Bearish trend but RSI {rsi:.1f} not high enough for exit"
 
     # Add more rules as you observe dry-runs (e.g. ATR too low/high)
