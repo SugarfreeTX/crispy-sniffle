@@ -10,14 +10,14 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(REPO_ROOT / ".env")
 
-# GPT-5.3-Codex in your account is signaling completions-style usage.
-OPENAI_API_URL = "https://api.openai.com/v1/responses"
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.3-codex")
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
 
+    # First try direct parse.
     try:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
@@ -25,6 +25,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
+    # Handle fenced markdown JSON blocks.
     if "```" in stripped:
         parts = stripped.split("```")
         for part in parts:
@@ -39,6 +40,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
                 except json.JSONDecodeError:
                     continue
 
+    # Fallback: parse from first opening brace to last closing brace.
     start = stripped.find("{")
     end = stripped.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -50,21 +52,12 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     raise ValueError(f"Could not parse JSON object from model output: {text}")
 
 
-def _build_codex_input(user_prompt: str) -> str:
-    return (
-        "You refine trading strategy parameters.\n"
-        "Return only valid JSON object with updated keys and values.\n\n"
-        f"{user_prompt}\n"
-    )
-
-
 def codex_api_call(
     prompt: str,
     *,
     model: str | None = None,
     temperature: float = 0.2,
     timeout: int = 45,
-    max_tokens: int = 800,
 ) -> str:
     api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -72,9 +65,18 @@ def codex_api_call(
 
     payload = {
         "model": model or DEFAULT_CODEX_MODEL,
-        "input": _build_codex_input(prompt),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You refine trading strategy parameters. "
+                    "Return only valid JSON object with updated keys and values."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
         "temperature": temperature,
-        "max_output_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
     }
 
     headers = {
@@ -97,17 +99,10 @@ def codex_api_call(
         ) from exc
 
     data = response.json()
-
-    # Responses endpoint shape: output[0].content[0].text
     try:
-        text = data["output"][0]["content"][0]["text"]
-        return text.strip()
-    except (KeyError, IndexError, TypeError):
-        # Defensive fallbacks for variant response payload shapes.
-        try:
-            return data["output_text"].strip()
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError(f"Unexpected OpenAI response shape: {data}") from exc
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected OpenAI response shape: {data}") from exc
 
 
 def refine_strategy_with_codex(current_params: dict, grok_feedback: str) -> dict[str, Any]:
