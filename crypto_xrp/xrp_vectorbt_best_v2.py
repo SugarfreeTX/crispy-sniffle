@@ -24,22 +24,22 @@ class Config:
     slippage_bps: float = 5.0
 
     # Fixed percent allocation per trade (independent of ATR)
-    position_size_pct: float = 0.12
+    position_size_pct: float = 0.10
 
     # Trend and momentum filters on 4H closes
-    sma_fast: int = 12
-    sma_slow: int = 42
-    sma_long: int = 90
-    sell_rsi: float = 78.0
+    sma_fast: int = 10
+    sma_slow: int = 48
+    sma_long: int = 120
+    sell_rsi: float = 74.0
 
     # ATR used only as a volatility filter (not for sizing)
     atr_window: int = 14
-    atr_filter_min_pct: float = 0.003
-    atr_filter_max_pct: float = 0.06
+    atr_filter_min_pct: float = 0.004
+    atr_filter_max_pct: float = 0.045
 
     # Stops are fractional distances, e.g. 0.012 = 1.2%
-    sl_stop: float = 0.012
-    tp_stop: float = 0.05
+    sl_stop: float = 0.01
+    tp_stop: float = 0.045
 
     # Evaluate conditions at close, execute at next bar open
     freq: str = "4h"

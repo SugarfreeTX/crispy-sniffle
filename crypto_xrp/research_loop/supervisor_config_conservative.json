@@ -1,0 +1,10 @@
+{
+  "max_iterations": 25,
+  "patience": 6,
+  "min_improvement": 0.02,
+  "max_drawdown_limit": 0.25,
+  "min_trades": 12,
+  "dd_penalty_weight": 1.5,
+  "log_jsonl_path": "crypto_xrp/research_loop/supervisor_runs_conservative.jsonl",
+  "best_json_path": "crypto_xrp/research_loop/best_config_conservative.json"
+}
