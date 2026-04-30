@@ -1,0 +1,48 @@
+{
+  "csv_path": "/Users/khemra/dev/crispy-sniffle/crypto_xrp/data/xrp_4h_clean.csv",
+  "rows": 4373,
+  "iterations_completed": 6,
+  "no_improve_streak": 6,
+  "best_score": 1.3621390080519982,
+  "best_metrics": {
+    "total_return": 0.1460463325979829,
+    "annualized_return": 0.0706523418377123,
+    "sharpe": 1.4252430186397467,
+    "sortino": 2.505131085135659,
+    "max_drawdown": -0.04206934039183241,
+    "win_rate": 0.3305084745762712,
+    "profit_factor": 1.4336809269070656,
+    "expectancy": 61.884039236433466,
+    "num_trades": 236,
+    "avg_trade_duration": 4.135593220338983,
+    "best_trade": 2104.9382905020566,
+    "worst_trade": -1275.510169717967
+  },
+  "best_params": {
+    "initial_cash": 100000.0,
+    "commission_bps": 5.0,
+    "slippage_bps": 5.0,
+    "position_size_pct": 0.12,
+    "sma_fast": 12,
+    "sma_slow": 42,
+    "sma_long": 90,
+    "sell_rsi": 78.0,
+    "atr_window": 14,
+    "atr_filter_min_pct": 0.003,
+    "atr_filter_max_pct": 0.06,
+    "sl_stop": 0.012,
+    "tp_stop": 0.05,
+    "freq": "4h"
+  },
+  "last_grok_eval": "Rules loaded. Ready for metrics.\n\n1. Structural Strengths  \n   The strategy shows a positive total return of 14.6% and an annualized return of 7.07%, indicating overall profitability. The Sharpe ratio of 1.43 and Sortino ratio of 2.51 suggest good risk-adjusted returns, with the Sortino highlighting strong downside protection. A profit factor of 1.43 implies that winning trades outperform losing ones based on the provided metrics.\n\n2. Structural Weaknesses  \n   The win rate is low at 33.05%, meaning less than one-third of trades are profitable, which could indicate inconsistency. The maximum drawdown of -4.21% is moderate but represents a potential risk to capital, and with only 236 trades, the sample size may limit reliability.\n\n3. Regime Vulnerabilities  \n   No regime-specific data (e.g., market conditions) was provided, so uncertainty exists regarding performance across different environments like bull or bear markets. Based solely on the metrics, the strategy's positive returns and low drawdown might suggest resilience, but this cannot be confirmed without additional data.\n\n4. Volatility-Specific Behavior  \n   The Sharpe ratio of 1.43 indicates the strategy handles overall volatility adequately, while the Sortino ratio of 2.51 shows better performance in managing downside volatility. However, without specific volatility metrics (e.g., standard deviation breakdowns), behavior in high or low volatility periods remains uncertain.\n\n5. Risk Model Evaluation  \n   The maximum drawdown of -4.21% suggests a relatively contained risk profile. The Sharpe and Sortino ratios (1.43 and 2.51) support effective risk management, as they reflect returns per unit of risk. No other risk metrics were provided, so evaluation is limited to these indicators.\n\n6. Edge Concentration  \n   With 236 trades, the edge appears moderately diversified, but the best trade (2104.94) and worst trade (-1275.51) indicate potential concentration in extreme outcomes. The positive expectancy of 61.88 per trade suggests an overall edge, though the low win rate (33.05%) implies it may rely on a few large wins.\n\n7. Failure Modes  \n   A low win rate of 33.05% could lead to failure in periods of frequent losses, especially if drawdowns exceed -4.21%. The average trade duration of 4.14 units might expose the strategy to short-term risks, and with only 236 trades, small sample issues could amplify failure in out-of-sample conditions.\n\n8. Recommended Next Experiments  \n   Test the strategy with a larger sample of trades (e.g., expand to more data periods) to assess win rate stability. Compare performance across segmented volatility regimes using historical data. Evaluate sensitivity to drawdown thresholds by simulating scenarios with varying maximum drawdowns.",
+  "supervisor_config": {
+    "max_iterations": 25,
+    "patience": 6,
+    "min_improvement": 0.02,
+    "max_drawdown_limit": 0.25,
+    "min_trades": 12,
+    "dd_penalty_weight": 1.5,
+    "log_jsonl_path": "crypto_xrp/research_loop/supervisor_runs_conservative.jsonl",
+    "best_json_path": "crypto_xrp/research_loop/best_config_conservative.json"
+  }
+}
