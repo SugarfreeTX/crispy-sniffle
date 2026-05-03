@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSON file with SupervisorConfig key/value overrides.",
     )
     parser.add_argument(
+        "--proposal-source",
+        type=str,
+        default=None,
+        help="Optional proposal engine override: codex or optuna.",
+    )
+    parser.add_argument(
         "--output-json",
         type=str,
         default=None,
@@ -87,6 +93,8 @@ def main() -> None:
 
     initial_cfg = _load_strategy_config(args.config_json)
     sup_cfg = _load_supervisor_config(args.supervisor_config_json)
+    if args.proposal_source:
+        sup_cfg.proposal_source = args.proposal_source
 
     mem = run_supervisor_loop(data, sup_cfg, initial_cfg=initial_cfg)
 
@@ -110,6 +118,7 @@ def main() -> None:
         mem.grok_eval[: max(args.grok_preview_chars, 0)].replace("\n", " "),
     )
     print(f"best_params: {config_to_dict(mem.best_cfg)}")
+    print(f"proposal_source: {sup_cfg.proposal_source}")
     print(f"log_jsonl_path: {sup_cfg.log_jsonl_path}")
     print(f"best_json_path: {sup_cfg.best_json_path}")
 
@@ -126,6 +135,7 @@ def main() -> None:
             "best_metrics": mem.best_metrics,
             "best_params": config_to_dict(mem.best_cfg),
             "last_grok_eval": mem.grok_eval,
+            "proposal_metadata": mem.proposal_metadata,
             "supervisor_config": {
                 "max_iterations": sup_cfg.max_iterations,
                 "patience": sup_cfg.patience,
@@ -133,6 +143,20 @@ def main() -> None:
                 "max_drawdown_limit": sup_cfg.max_drawdown_limit,
                 "min_trades": sup_cfg.min_trades,
                 "dd_penalty_weight": sup_cfg.dd_penalty_weight,
+                "proposal_source": sup_cfg.proposal_source,
+                "optuna_trials_per_iteration": sup_cfg.optuna_trials_per_iteration,
+                "optuna_timeout_seconds": sup_cfg.optuna_timeout_seconds,
+                "optuna_seed": sup_cfg.optuna_seed,
+                "wf_train_days": sup_cfg.wf_train_days,
+                "wf_test_days": sup_cfg.wf_test_days,
+                "wf_step_days": sup_cfg.wf_step_days,
+                "wf_bars_per_day": sup_cfg.wf_bars_per_day,
+                "wf_min_test_bars": sup_cfg.wf_min_test_bars,
+                "wf_min_windows_required": sup_cfg.wf_min_windows_required,
+                "wf_dd_penalty_weight": sup_cfg.wf_dd_penalty_weight,
+                "wf_sharpe_stability_penalty_weight": sup_cfg.wf_sharpe_stability_penalty_weight,
+                "wf_gate_max_drawdown_limit": sup_cfg.wf_gate_max_drawdown_limit,
+                "wf_gate_min_trades": sup_cfg.wf_gate_min_trades,
                 "log_jsonl_path": sup_cfg.log_jsonl_path,
                 "best_json_path": sup_cfg.best_json_path,
             },

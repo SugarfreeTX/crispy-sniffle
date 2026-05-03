@@ -7,6 +7,8 @@ from typing import Any
 
 from crypto_xrp.research_loop.pipeline import Config, config_from_dict, config_to_dict, research_iteration
 from crypto_xrp.research_loop.backtest_runner import run_backtest_and_extract_metrics
+from crypto_xrp.research_loop.walk_forward_scorer import WalkForwardScoreSpec, WalkForwardSpec
+from crypto_xrp.research_loop.optuna_proposer import propose_params_with_optuna
 
 
 class LoopState(Enum):
@@ -29,6 +31,26 @@ class SupervisorConfig:
     max_drawdown_limit: float = 0.35
     min_trades: int = 8
     dd_penalty_weight: float = 1.0
+    proposal_source: str = "codex"
+
+    # Optuna proposal settings.
+    optuna_trials_per_iteration: int = 25
+    optuna_timeout_seconds: int | None = None
+    optuna_seed: int = 42
+
+    # Walk-forward objective settings used by Optuna.
+    wf_train_days: int = 365
+    wf_test_days: int = 90
+    wf_step_days: int = 30
+    wf_bars_per_day: int = 6
+    wf_min_test_bars: int = 200
+    wf_min_windows_required: int = 3
+
+    wf_dd_penalty_weight: float = 1.0
+    wf_sharpe_stability_penalty_weight: float = 0.5
+    wf_gate_max_drawdown_limit: float | None = 0.35
+    wf_gate_min_trades: int | None = 8
+
     log_jsonl_path: str = "crypto_xrp/research_loop/supervisor_runs.jsonl"
     best_json_path: str = "crypto_xrp/research_loop/best_config.json"
 
@@ -57,7 +79,26 @@ class SupervisorMemory:
 
     proposed_params: dict[str, Any] = field(default_factory=dict)
     grok_eval: str = ""
+    proposal_metadata: dict[str, Any] = field(default_factory=dict)
     candidate_eval: CandidateEval | None = None
+
+
+def _build_optuna_wf_specs(cfg: SupervisorConfig) -> tuple[WalkForwardSpec, WalkForwardScoreSpec]:
+    wf_spec = WalkForwardSpec(
+        train_days=cfg.wf_train_days,
+        test_days=cfg.wf_test_days,
+        step_days=cfg.wf_step_days,
+        bars_per_day=cfg.wf_bars_per_day,
+        min_test_bars=cfg.wf_min_test_bars,
+        min_windows_required=cfg.wf_min_windows_required,
+    )
+    score_spec = WalkForwardScoreSpec(
+        dd_penalty_weight=cfg.wf_dd_penalty_weight,
+        sharpe_stability_penalty_weight=cfg.wf_sharpe_stability_penalty_weight,
+        max_drawdown_limit=cfg.wf_gate_max_drawdown_limit,
+        min_trades=cfg.wf_gate_min_trades,
+    )
+    return wf_spec, score_spec
 
 
 def objective_score(metrics: dict[str, Any], dd_penalty_weight: float) -> float:
@@ -115,10 +156,36 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
             mem.state = LoopState.PROPOSE_CANDIDATE
 
         elif mem.state == LoopState.PROPOSE_CANDIDATE:
-            # Uses existing pipeline: backtest -> Grok -> Codex proposal
-            new_params, _, grok_eval = research_iteration(data, mem.incumbent_cfg)
-            mem.proposed_params = new_params
-            mem.grok_eval = grok_eval
+            proposal_source = sup_cfg.proposal_source.lower().strip()
+            if proposal_source == "optuna":
+                wf_spec, score_spec = _build_optuna_wf_specs(sup_cfg)
+                new_params, proposal_metadata = propose_params_with_optuna(
+                    data=data,
+                    base_cfg=mem.incumbent_cfg,
+                    trials_per_iteration=sup_cfg.optuna_trials_per_iteration,
+                    timeout_seconds=sup_cfg.optuna_timeout_seconds,
+                    seed=sup_cfg.optuna_seed + mem.iteration,
+                    wf_spec=wf_spec,
+                    wf_score_spec=score_spec,
+                )
+                mem.proposed_params = new_params
+                mem.proposal_metadata = proposal_metadata
+                mem.grok_eval = (
+                    "optuna proposal | "
+                    f"trial={proposal_metadata.get('best_trial_number')} "
+                    f"value={proposal_metadata.get('best_value')} "
+                    f"trials={proposal_metadata.get('trial_count')}"
+                )
+            elif proposal_source == "codex":
+                # Existing pipeline: backtest -> Grok -> Codex proposal
+                new_params, _, grok_eval = research_iteration(data, mem.incumbent_cfg)
+                mem.proposed_params = new_params
+                mem.proposal_metadata = {"engine": "codex"}
+                mem.grok_eval = grok_eval
+            else:
+                raise ValueError(
+                    f"Unsupported proposal_source={sup_cfg.proposal_source!r}. Use 'codex' or 'optuna'."
+                )
             mem.state = LoopState.EVALUATE_CANDIDATE
 
         elif mem.state == LoopState.EVALUATE_CANDIDATE:
@@ -161,6 +228,7 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                 "best_score": mem.best_score,
                 "no_improve_streak": mem.no_improve_streak,
                 "proposed_params": mem.proposed_params,
+                "proposal_metadata": mem.proposal_metadata,
                 "candidate_score": mem.candidate_eval.score,
                 "candidate_metrics": mem.candidate_eval.metrics,
                 "candidate_passed_hard_gate": mem.candidate_eval.passed_hard_gate,
