@@ -585,16 +585,7 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
         base_shares = int(risk_amount / (atr_14 * 2)) if atr_14 > 0 else 0  # 2x ATR stop
         
         # Apply regime-based position sizing
-        # suggested_shares = int(base_shares * regime_multiplier)
-        suggested_shares = int(base_shares * regime_multiplier * dd_size_multiplier * streak_multiplier)
-
-        # NEW: Apply global risk scaling for live-small mode
-        risk_scale = get_risk_scale(args) if 'args' in locals() else 1.0
-        suggested_shares = int(suggested_shares * risk_scale)
-
-        # Optional safety floor
-        if suggested_shares < 1 and risk_scale > 0:
-            suggested_shares = 1  # minimum 1 share probe even in small mode
+        suggested_shares = int(base_shares * regime_multiplier)
         
         # Calculate portfolio metrics including drawdown
         metrics = calculate_portfolio_metrics(portfolio, current_price)
