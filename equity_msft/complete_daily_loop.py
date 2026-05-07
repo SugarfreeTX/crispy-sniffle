@@ -599,12 +599,23 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
         # Apply regime-based position sizing
         suggested_shares = int(base_shares * regime_multiplier)
         
-        # Calculate portfolio metrics including drawdown
+       # === NEW: Full multipliers + Live-Small risk scaling ===
         metrics = calculate_portfolio_metrics(portfolio, current_price)
         drawdown_pct = metrics["current_drawdown_pct"]
-
-        # Determine drawdown level 
         dd_level, dd_name, dd_size_multiplier = get_drawdown_level(drawdown_pct)
+
+        streak_multiplier = get_loss_streak_multiplier(portfolio)
+
+        # Apply remaining multipliers
+        suggested_shares = int(suggested_shares * dd_size_multiplier * streak_multiplier)
+
+        # === GLOBAL RISK SCALE FOR --live-small ===
+        risk_scale = get_risk_scale(args) if 'args' in locals() else 1.0
+        suggested_shares = int(suggested_shares * risk_scale)
+
+        # Safety floor
+        if suggested_shares < 1 and risk_scale > 0:
+            suggested_shares = 1
 
         # Add unrealized PnL percentage for easier use
         unrealized_pnl_pct = round(metrics["unrealized_pnl"] / (portfolio["shares"] * current_price) * 100, 2) if portfolio["shares"] > 0 else 0.0
