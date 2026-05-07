@@ -243,6 +243,12 @@ def load_portfolio_state() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error loading portfolio state: {e}. Using default portfolio.")
         return default_portfolio
+    
+def get_risk_scale(args) -> float:
+    """Global risk multiplier for live testing."""
+    if getattr(args, 'live_small', False):
+        return 0.10   # Start with 10% of normal size (very conservative)
+    return 1.0        # Full size (normal mode)
 
 def save_portfolio_state(portfolio: Dict[str, Any]) -> None:
     """Save portfolio state to file with retry logic"""
@@ -579,7 +585,16 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
         base_shares = int(risk_amount / (atr_14 * 2)) if atr_14 > 0 else 0  # 2x ATR stop
         
         # Apply regime-based position sizing
-        suggested_shares = int(base_shares * regime_multiplier)
+        # suggested_shares = int(base_shares * regime_multiplier)
+        suggested_shares = int(base_shares * regime_multiplier * dd_size_multiplier * streak_multiplier)
+
+        # NEW: Apply global risk scaling for live-small mode
+        risk_scale = get_risk_scale(args) if 'args' in locals() else 1.0
+        suggested_shares = int(suggested_shares * risk_scale)
+
+        # Optional safety floor
+        if suggested_shares < 1 and risk_scale > 0:
+            suggested_shares = 1  # minimum 1 share probe even in small mode
         
         # Calculate portfolio metrics including drawdown
         metrics = calculate_portfolio_metrics(portfolio, current_price)
@@ -1311,6 +1326,9 @@ def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: 
     packet = None
     action = None
     reason = None
+    risk_scale = get_risk_scale(args) if 'args' in locals() else 1.0
+    mode = "LIVE-SMALL" if getattr(args, 'live_small', False) else ("DRY-RUN" if dry_run else "LIVE")
+    logger.info(f"=== Starting {mode} Mode | Risk Scale: {risk_scale:.0%} ===")
     logger.info("=== Starting Daily Trading Loop ===")
     if dry_run:
         logger.info("DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.")
@@ -1475,8 +1493,13 @@ if __name__ == "__main__":
     action="store_true",
     help="Query Grok every day in dry-run mode and log both deterministic + Grok decisions (no execution)"
     )
+    parser.add_argument(
+    "--live-small",
+    action="store_true",
+    help="Enable live trading with reduced risk (e.g. 10% of normal size). Use with --shadow-grok for monitoring."
+    )
     args = parser.parse_args()
-    shadow_mode = args.shadow_grok and args.dry_run  # only active in dry-run
+    shadow_mode = args.shadow_grok and args.dry_run or args.live_small # only active in dry-run
     
     BASE_DIR = Path(__file__).resolve().parent
     TEST_DIR = BASE_DIR / "test_runs"
