@@ -40,15 +40,27 @@ TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
 ENV_FILE = REPO_ROOT / ".env"
 FALLBACK_ENV_FILE = BASE_DIR / ".env"
 
+class ConsoleFilter(logging.Filter):
+    """Filter to suppress specific messages from console output"""
+    SUPPRESS_PATTERNS = ["Response headers"]
+    
+    def filter(self, record):
+        message = record.getMessage()
+        return not any(pattern in message for pattern in self.SUPPRESS_PATTERNS)
+
+console_handler = logging.StreamHandler()
+console_handler.addFilter(ConsoleFilter())
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
+        console_handler  # Use the one with the filter attached
     ]
 )
+
 logger = logging.getLogger(__name__)
 
 
