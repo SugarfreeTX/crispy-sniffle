@@ -1,0 +1,1609 @@
+import yfinance as yf
+import pandas as pd
+import json
+import argparse
+from datetime import datetime, timedelta, date
+import requests
+import logging
+import os
+import signal
+import sys
+from pathlib import Path
+from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+import pandas_market_calendars as mcal
+from typing import Tuple
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+import os
+import re
+from dotenv import load_dotenv
+from typing import Optional
+
+"""
+Symbol: DEFI
+Adapted from: MSFT
+Date: 2026-05-13
+Key Changes:
+- Ticker updated from MSFT to DEFI throughout (function names, packet["symbol"],
+  Alpaca orders, log messages, email subject/body, fallback .env path comment).
+- Position sizing scaled down due to higher volatility and lower liquidity:
+    * risk_per_trade_pct: 0.02 -> 0.01 (halved — DEFI moves much harder per unit
+      of capital risked, so we cut risk-per-trade in half).
+    * max_position_size_pct: 0.20 -> 0.10 (halved — lower liquidity means we
+      cap any single position at 10% of equity instead of 20%).
+- ATR constraints rescaled to DEFI's *observed* price range. Live yfinance data
+  shows DEFI trading near ~$90 with ATR ~1.22 (≈1.35% of price), so MSFT-scale
+  floors/ceilings (3.5 / 18.0) are too loose. NOTE: this contradicts the
+  AGENTS.md hint of "ATR often 0.10-0.50+" — the live symbol ticks higher than
+  that doc suggested, so we go with what the data actually shows:
+    * min_atr: 3.5  -> 0.20  (block trades only on dead-flat tape, but require
+      enough vol that ATR-based stops are meaningful at this price scale)
+    * max_atr: 18.0 -> 4.50  (~5% of price — block trades when vol is parabolic;
+      gives ~3.5x headroom over current ATR before the kill-switch fires)
+- Stop / take-profit multipliers widened to account for crypto-sensitive whipsaw:
+    * Stop-loss: 2x ATR  -> 2.5x ATR
+    * Take-profit: 3x ATR -> 4x ATR
+- Regime thresholds tightened (crypto-sensitive names see vol expansion sooner):
+    * High Volatility Regime trigger: atr_expansion_ratio >= 2.0 -> 1.7
+    * Elevated Volatility trigger:    atr_expansion_ratio >= 1.5 -> 1.3
+    * High-vol regime size multiplier: 0.75 -> 0.50 (more aggressive de-risk)
+- Loss-streak protection tightened: max_consecutive_losses 5 -> 4 (cuts off a
+  bad run one trade earlier on a more volatile name).
+- Grok prompt rules adjusted for DEFI:
+    * SELL on RSI >= 85 (down from 88) — overbought reverts faster on small-caps.
+    * Extreme-oversold BUY threshold tightened from RSI<22 to RSI<25 for high-vol.
+    * Symbol context line updated so Grok knows it is trading a small-cap,
+      crypto-sensitive ETF rather than a mega-cap tech name.
+- should_auto_hold drawdown-caution threshold tightened from 5% -> 3%
+  (start protecting capital sooner on a volatile name).
+- All other code (helpers, signal handling, atomic state saves, idempotency
+  guards, email summary plumbing, shadow-mode logic) is intentionally
+  identical to the MSFT version.
+
+-How It Works-
+1. Loads current portfolio from saved state file
+2. Fetches DEFI data with error recovery
+3. Sends to Grok for analysis with timeout protection
+4. Executes trades with full error handling
+5. Updates portfolio state automatically after successful trades
+6. Logs everything for full audit trail
+"""
+
+BASE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BASE_DIR.parent
+LOG_FILE = BASE_DIR / "trading_log.txt"
+PORTFOLIO_FILE = REPO_ROOT / "shared" / "portfolio_state.json"
+TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
+ENV_FILE = REPO_ROOT / ".env"
+FALLBACK_ENV_FILE = BASE_DIR / ".env"
+
+class ConsoleFilter(logging.Filter):
+    """Filter to suppress specific messages from console output"""
+    SUPPRESS_PATTERNS = ["Response headers"]
+    
+    def filter(self, record):
+        message = record.getMessage()
+        return not any(pattern in message for pattern in self.SUPPRESS_PATTERNS)
+
+console_handler = logging.StreamHandler()
+console_handler.addFilter(ConsoleFilter())
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        console_handler  # Use the one with the filter attached
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+
+def load_env_with_fallback() -> Optional[Path]:
+    """Load env vars from repo root .env, falling back to equity_defi/.env."""
+    if ENV_FILE.exists():
+        load_dotenv(dotenv_path=ENV_FILE)
+        return ENV_FILE
+
+    if FALLBACK_ENV_FILE.exists():
+        load_dotenv(dotenv_path=FALLBACK_ENV_FILE)
+        logger.warning(
+            "Root .env not found at %s; using fallback %s",
+            ENV_FILE,
+            FALLBACK_ENV_FILE,
+        )
+        return FALLBACK_ENV_FILE
+
+    load_dotenv()
+    logger.warning(
+        "No .env file found at %s or %s; relying on process environment",
+        ENV_FILE,
+        FALLBACK_ENV_FILE,
+    )
+    return None
+
+
+def _install_signal_logging() -> None:
+    """Log signals and allow default termination behavior."""
+
+    def _handler(signum: int, _frame) -> None:
+        try:
+            sig_name = signal.Signals(signum).name
+        except Exception:
+            sig_name = str(signum)
+
+        logger.warning(
+            "Signal received: %s (%s) | pid=%s ppid=%s | TERM_PROGRAM=%s",
+            signum, sig_name, os.getpid(), os.getppid(),
+            os.getenv("TERM_PROGRAM")
+        )
+
+        # For SIGTERM / SIGHUP: log → then let default action terminate us
+        # For SIGINT: raise KeyboardInterrupt so main() catches it (though rare in launchd)
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        if sig is not None:
+            try:
+                signal.signal(sig, _handler)
+            except Exception:
+                continue
+
+
+_install_signal_logging()
+
+
+def previous_trading_day(reference_date: date) -> date:
+    """Return the prior NYSE trading session before reference_date (holiday-aware)."""
+    lookback_days = 10
+    try:
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(
+            start_date=reference_date - timedelta(days=lookback_days),
+            end_date=reference_date - timedelta(days=1)
+        )
+        if not schedule.empty:
+            return schedule.index[-1].date()
+    except Exception as e:
+        logger.warning(f"Trading calendar lookup failed: {e}. Falling back to weekday logic.")
+
+    prev_day = reference_date - timedelta(days=1)
+    while prev_day.weekday() >= 5:  # Saturday/Sunday fallback
+        prev_day -= timedelta(days=1)
+    return prev_day
+
+def calculate_rsi(prices: list, period: int = 14) -> float:
+    """Calculate RSI from price history, returns rounded value"""
+    try:
+        if len(prices) < period + 1:
+            return 50.0  # Neutral RSI if insufficient data
+        
+        price_series = pd.Series(prices)
+        delta = price_series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        # Avoid division by zero
+        rs = gain / loss.replace(0, 0.0001)
+        rsi = 100 - (100 / (1 + rs))
+        
+        return round(rsi.iloc[-1], 1)  # Return most recent RSI, rounded to 1 decimal
+    
+    except Exception as e:
+        logger.warning(f"Error calculating RSI: {e}. Returning neutral RSI of 50.0")
+        return 50.0  # Return neutral RSI if calculation fails
+
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """Calculate Average True Range (ATR) from OHLC data"""
+    try:
+        if len(df) < period + 1:
+            return 0.0  # Return 0 if insufficient data
+        
+        # Calculate the three potential ranges for True Range
+        high_low = df['High'] - df['Low']
+        high_close_prev = abs(df['High'] - df['Close'].shift(1))
+        low_close_prev = abs(df['Low'] - df['Close'].shift(1))
+        
+        # True Range is the maximum of those three
+        tr = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+        
+        # Calculate ATR (Simple Moving Average of True Range)
+        atr = tr.rolling(window=period).mean()
+        
+        return round(atr.iloc[-1], 2)  # Return most recent ATR, rounded to 2 decimals
+    
+    except Exception as e:
+        logger.warning(f"Error calculating ATR: {e}. Returning 0.0")
+        return 0.0  # Return 0 if calculation fails
+
+def fetch_alpaca_cash_balance(api_key: str, secret_key: str) -> Optional[float]:
+    """Fetch the actual cash balance directly from the Alpaca account."""
+    url = "https://paper-api.alpaca.markets/v2/account"
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": secret_key
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        cash = float(data.get("cash", 0.0))
+        logger.info(f"Fetched Alpaca cash balance: ${cash:.2f}")
+        return cash
+    except Exception as e:
+        logger.warning(f"Failed to fetch Alpaca cash balance: {e}. Using local state.")
+        return None
+
+
+def load_portfolio_state() -> Dict[str, Any]:
+    """Load portfolio state from file, syncing cash from Alpaca if credentials available."""
+    default_portfolio = {
+        "cash": 100000.00,
+        "shares": 0,
+        "cost_basis": 0.00,
+        "initial_capital": 100000.00,
+        "peak_value": 100000.00,
+        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_regime": "Normal",
+        "regime_days_in_state": 1,
+        "consecutive_loss_streak": 0,
+        "max_consecutive_losses": 4,  # DEFI: tightened from 5 -> 4
+        "last_trade_was_win": False,
+    }
+    
+    try:
+        if PORTFOLIO_FILE.exists():
+            with open(PORTFOLIO_FILE, "r") as f:
+                portfolio = json.load(f)
+                # Ensure new fields exist (for old saved states)
+                portfolio.setdefault("last_regime", "Normal")
+                portfolio.setdefault("regime_days_in_state", 1)
+                portfolio.setdefault("consecutive_loss_streak", 0)
+                portfolio.setdefault("max_consecutive_losses", 4)  # DEFI: tightened
+                portfolio.setdefault("last_trade_was_win", False)
+        else:
+            logger.info("No existing portfolio file found, using default portfolio")
+            portfolio = default_portfolio
+            save_portfolio_state(portfolio)
+
+        # ── Sync cash from Alpaca (live source of truth) ──────────────
+        load_env_with_fallback()
+        alpaca_key = os.getenv("ALPACA_API_KEY")
+        alpaca_secret = os.getenv("ALPACA_SECRET_KEY")
+        if alpaca_key and alpaca_secret:
+            alpaca_cash = fetch_alpaca_cash_balance(alpaca_key, alpaca_secret)
+            if alpaca_cash is not None:
+                local_cash = portfolio.get("cash", 0.0)
+                diff = local_cash - alpaca_cash
+                if abs(diff) > 0.01:
+                    logger.warning(
+                        f"Cash sync: local=${local_cash:.2f} | Alpaca=${alpaca_cash:.2f} | "
+                        f"diff=${diff:.2f} — updating local state to match Alpaca."
+                    )
+                portfolio["cash"] = alpaca_cash
+        else:
+            logger.info("Alpaca credentials not available — using local cash from portfolio state.")
+
+        logger.info(f"Loaded portfolio state: {portfolio}")
+        return portfolio
+    except Exception as e:
+        logger.error(f"Error loading portfolio state: {e}. Using default portfolio.")
+        return default_portfolio
+    
+def get_risk_scale(args) -> float:
+    """Global risk multiplier for live testing."""
+    if getattr(args, 'live_small', False):
+        return 0.10   # Start with 10% of normal size (very conservative)
+    return 1.0        # Full size (normal mode)
+
+def save_portfolio_state(portfolio: Dict[str, Any]) -> None:
+    """Save portfolio state to file with retry logic"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            portfolio["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Write to temp file first, then rename (atomic operation)
+            temp_file = PORTFOLIO_FILE.with_suffix(PORTFOLIO_FILE.suffix + ".tmp")
+            with open(temp_file, "w") as f:
+                json.dump(portfolio, f, indent=2)
+            os.replace(temp_file, PORTFOLIO_FILE)
+            logger.info(f"Saved portfolio state: {portfolio}")
+            return
+        except Exception as e:
+            logger.error(f"Error saving portfolio state (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                logger.critical("CRITICAL: Failed to save portfolio state after all retries!")
+                raise  # Re-raise on final attempt
+
+def log_trade(action: str, qty: int, price: float, reason: str, portfolio_value: float, metrics: Optional[Dict[str, Any]] = None) -> None:
+    """Log trade to trade history file"""
+    try:
+        # Load existing trade history
+        trade_history = []
+        if TRADE_HISTORY_FILE.exists():
+            with open(TRADE_HISTORY_FILE, "r") as f:
+                trade_history = json.load(f)
+        
+        # Create trade record
+        trade_record = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "action": action,
+            "qty": qty,
+            "price": price,
+            "reason": reason,
+            "portfolio_value": round(portfolio_value, 2)
+        }
+        
+        # Add optional metrics
+        if metrics:
+            trade_record.update(metrics)
+        
+        trade_history.append(trade_record)
+        
+        # Save updated history
+        with open(TRADE_HISTORY_FILE, "w") as f:
+            json.dump(trade_history, f, indent=2)
+        
+        logger.info(f"Logged trade: {action} {qty} shares at ${price:.2f}")
+    except Exception as e:
+        logger.error(f"Error logging trade: {e}")
+
+
+def has_executed_trade_today() -> bool:
+    """Return True if a live BUY/SELL was already recorded today in trade history."""
+    try:
+        if not TRADE_HISTORY_FILE.exists():
+            return False
+
+        with open(TRADE_HISTORY_FILE, "r") as f:
+            trade_history = json.load(f)
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        # Only include actions that are actually logged for executed orders
+        executed_actions = {"BUY", "SELL_PARTIAL", "SELL_FULL"}
+
+        for trade in reversed(trade_history):
+            timestamp = str(trade.get("timestamp", ""))
+            action = str(trade.get("action", "")).upper()
+            if timestamp.startswith(today_str) and action in executed_actions:
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"Unable to verify daily trade idempotency: {e}")
+        return False
+
+def is_market_open() -> bool:
+    """Check if NYSE is scheduled to trade today (year-safe weekend + holiday handling)."""
+    now = datetime.now()
+
+    if now.weekday() >= 5:
+            logger.info("Market closed: Weekend")
+            return False
+    try:
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(start_date=now.date(), end_date=now.date())
+        return not schedule.empty
+    except Exception as e:
+        logger.warning(f"Market calendar check failed: {e}. Assuming closed for safety.")
+        return False
+
+def calculate_portfolio_metrics(portfolio: Dict[str, Any], current_price: float) -> Dict[str, Any]:
+    """Calculate comprehensive portfolio metrics including P&L and drawdown"""
+    cash = portfolio["cash"]
+    shares = portfolio["shares"]
+    cost_basis = portfolio.get("cost_basis", 0.00)
+    initial_capital = portfolio.get("initial_capital", 100000.00)
+    peak_value = portfolio.get("peak_value", initial_capital)
+    
+    # Calculate values
+    position_value = shares * current_price
+    total_equity = cash + position_value
+    unrealized_pnl = (current_price - cost_basis) * shares if shares > 0 else 0.0
+    total_pnl = total_equity - initial_capital
+    total_return_pct = ((total_equity - initial_capital) / initial_capital) * 100
+    
+    # Update peak value for drawdown calculation
+    new_peak = max(peak_value, total_equity)
+    current_drawdown = ((new_peak - total_equity) / new_peak) * 100 if new_peak > 0 else 0.0
+    
+    return {
+        "total_equity": round(total_equity, 2),
+        "position_value": round(position_value, 2),
+        "unrealized_pnl": round(unrealized_pnl, 2),
+        "total_pnl": round(total_pnl, 2),
+        "total_return_pct": round(total_return_pct, 2),
+        "peak_value": round(new_peak, 2),
+        "current_drawdown_pct": round(current_drawdown, 2)
+    }
+
+def get_drawdown_level(drawdown_pct: float) -> tuple[int, str, float]:
+    """Return (level: int, name: str, size_multiplier: float) 
+    size_multiplier is applied to suggested shares/risk amount
+    """
+    if drawdown_pct >= 10.0:
+        return 3, "Emergency (>10%)", 0.0  # No new risk allowed
+    elif drawdown_pct >= 8.0:
+        return 2, "Restricted (8-9.9%)", 0.25 # Only very small positions allowed
+    elif drawdown_pct >= 5.0:
+        return 1, "Caution (5-7.9%)", 0.5   # Reduce position size by 50%
+    else: 
+        return 0, "Normal (<5%)", 1.0   # No adjustment
+    
+def get_loss_streak_multiplier(portfolio: Dict[str, Any]) -> float:
+    # DEFI: tighter ladder than MSFT — small-cap, high-vol name should de-risk
+    # one trade earlier on a losing streak.
+    streak = portfolio.get("consecutive_loss_streak", 0)
+    if streak >= 4:
+        return 0.0
+    elif streak >= 3:
+        return 0.25
+    elif streak >= 2:
+        return 0.5
+    else:
+        return 1.0
+
+def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
+    """Quick local check: if conditions strongly suggest HOLD, skip Grok call. Returns (bool, reason)."""
+    if packet is None:
+        return False, "No packet provided"
+
+    md = packet.get("market_data", {})
+    port = packet.get("portfolio", {})
+    constr = packet.get("constraints", {})
+
+    rsi = md.get("rsi_14", 50.0)
+    regime = md.get("market_regime", "Normal")
+    rel_vol = md.get("relative_volume", 1.0)
+    drawdown_pct = port.get("current_drawdown_pct", 0.0)
+    trend_label = md.get("trend_label", "Neutral")
+    regime_changed = md.get("regime_changed_today", False)
+
+    # NEW: Drawdown-based rules (highest priority) ---------------------------------------------
+    if drawdown_pct >= 10.0:
+        return True, f"Emergency drawdown ({drawdown_pct:.1f}%) - all new risk blocked"
+    
+    if drawdown_pct >= 8.0:
+        return True, f"Restricted drawdown ({drawdown_pct:.1f}%) - HOLD or exit only, no new BUY positions"
+    
+    if drawdown_pct >= 3.0:
+        # DEFI: tightened caution threshold from 5% -> 3%. Small-cap volatile names
+        # should start protecting capital sooner. Still let Grok decide, but only
+        # allow entry on extreme setups.
+        if "Bullish" not in trend_label or rsi > 35:  # not extreme oversold in uptrend
+            return True, f"Caution drawdown ({drawdown_pct:.1f}%) - not extreme oversold setup"
+
+    # --- Regime and indicator-based rules (apply after drawdown is <5%) ------------------------
+
+    # Rule 1: Neutral zone – most common auto-hold case
+    if (40 <= rsi <= 60 and
+        regime == "Normal" and
+        rel_vol <= 1.3 and
+        not regime_changed):
+        return True, "Neutral RSI, Normal regime, low volume, no regime change"
+
+    # Rule 2: Drawdown protection – avoid adding risk
+    max_dd_warning = 6.0  # trigger early, before your 10% hard block
+    if drawdown_pct >= max_dd_warning:
+        return True, f"Drawdown at {drawdown_pct:.2f}% - approaching max drawdown limit"
+
+    # Rule 3: Bullish but not oversold enough to justify buy
+    if "Bullish" in trend_label and rsi >= 62:  # not deep enough dip
+        return True, f"Bullish trend but RSI {rsi} not low enough for entry"
+
+    # Rule 4: Bearish but not overbought enough for exit
+    if "Bearish" in trend_label and rsi <= 20.0:   # lowered from 22 → 20
+        return True, f"Bearish trend but RSI {rsi:.1f} not high enough for exit"
+
+    # Add more rules as you observe dry-runs (e.g. ATR too low/high)
+    return False, "No auto-hold rule triggered"
+
+def fetch_defi_daily() -> Optional[Dict[str, Any]]:
+    """Fetch DEFI market data and build trading packet with current portfolio state"""
+    logger.info("Starting DEFI data fetch...")
+    
+    try:
+        # Load current portfolio state
+        portfolio = load_portfolio_state()
+        
+        # Pull the last 1 year of DEFI daily candles
+        ticker = yf.Ticker("DEFI")
+        logger.info("Fetching DEFI market data from Yahoo Finance...")
+        hist = ticker.history(period="1y") # Fetch 1 year to ensure we have enough data for indicators, but we'll use only recent data for history array and to make sma_200 compute sooner
+        
+        if hist.empty:
+            logger.error("No historical data returned from Yahoo Finance")
+            return None
+        
+        last_bar_date = hist.index[-1].date()
+        today = datetime.now().date()
+        prev_trade_day = previous_trading_day(today)
+
+        # Accept today (if data includes current session) or the latest prior trading day.
+        if last_bar_date not in [prev_trade_day, today]:
+            logger.warning(f"Stale data detected: Last bar is {last_bar_date} — market likely closed or data issue. Aborting.")
+            return None
+        
+        logger.info(f"Data fresh: Last bar {last_bar_date}")
+        
+        # Extract the most recent row (yesterday's close if run after market close)
+        latest = hist.iloc[-1]
+
+        # Volume enhancements
+        if len(hist) >= 20:
+            avg_vol_20 = int(hist['Volume'].rolling(20).mean().iloc[-1])
+            rel_volume = round(latest["Volume"] / avg_vol_20, 2) if avg_vol_20 > 0 else 1.0
+        else:
+            avg_vol_20 = int(latest["Volume"])
+            rel_volume = 1.0  # Neutral fallback
+
+        # Build the history array (close prices only) - rounded and limited for token efficiency
+        n_days = 60 if len(hist) >= 60 else len(hist)
+        close_history = [round(price, 2) for price in hist["Close"].tolist()[-n_days:]]  # Last 60 days only
+
+        # Compute simple volatility (std dev of returns)
+        returns = hist["Close"].pct_change().dropna()
+        volatility = round(float(returns.std()), 5)
+        
+        # Calculate RSI(14)
+        rsi_14 = calculate_rsi(hist["Close"].tolist())
+        
+        # Calculate ATR(14) and ATR percentile
+        atr_14 = calculate_atr(hist)
+        
+        # Warning for zero or very low ATR
+        # DEFI: rescaled warning threshold from 1.0 -> 0.20 to match the new
+        # min_atr constraint and the observed ATR range for this lower-liquidity
+        # symbol. Anything below 0.20 indicates a near-flat tape that will
+        # produce nonsense position sizing.
+        if atr_14 == 0.0:
+            logger.warning("ATR is 0.0 - position sizing will be 0. Check data quality.")
+        elif atr_14 < 0.20:
+            logger.warning(f"ATR is very low ({atr_14}) - position sizing may be affected.")
+        
+        # Calculate ATR for all historical data to get percentile and regime
+        high_low = hist['High'] - hist['Low']
+        high_close_prev = abs(hist['High'] - hist['Close'].shift(1))
+        low_close_prev = abs(hist['Low'] - hist['Close'].shift(1))
+        tr = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+        hist_atr = tr.rolling(window=14).mean()
+        atr_percentile = round(float((hist_atr.rank(pct=True).iloc[-1]) * 100), 1)
+        
+        # Regime Filtering: Calculate ATR expansion ratio
+        atr_14_day_avg = hist_atr.iloc[-14:].mean()  # Average of last 14 ATR values
+        atr_expansion_ratio = round(atr_14 / atr_14_day_avg, 2) if atr_14_day_avg > 0 else 1.0
+        
+        # Determine market regime and position size multiplier
+        # DEFI: tightened regime triggers (2.0 -> 1.7, 1.5 -> 1.3) and
+        # more aggressive de-risk in High Vol (0.75 -> 0.50). Crypto-sensitive
+        # names experience volatility expansions sooner and harder than mega-cap tech.
+        if atr_expansion_ratio >= 1.7:
+            regime = "High Volatility Regime"
+            regime_multiplier = 0.50  # DEFI: more aggressive de-risk
+        elif atr_expansion_ratio >= 1.3:
+            regime = "Elevated Volatility"
+            regime_multiplier = 0.75  # DEFI: also de-risk slightly in elevated vol
+        elif atr_expansion_ratio <= 0.5:
+            regime = "Low Volatility"
+            regime_multiplier = 1.0  # Keep normal position
+        else:
+            regime = "Normal"
+            regime_multiplier = 1.0  # Normal position sizing
+        
+        # ── Regime persistence logic ────────────────────────────────
+        current_portfolio = load_portfolio_state()  # already loaded earlier, but reload to be safe
+        last_regime = current_portfolio.get("last_regime", "Normal")
+        regime_days = current_portfolio.get("regime_days_in_state", 1)
+
+        if regime == last_regime:
+            regime_days += 1
+        else:
+            regime_days = 1
+            logger.info(f"Regime changed from {last_regime} to {regime}")
+
+        # Soft 0.90× damper after persistent adverse regime; entries still allowed.
+        # Hard HOLD only fires via should_auto_hold() at drawdown >= 8%.
+        if (
+            regime in ("High Volatility Regime", "Elevated Volatility")
+            and regime_days >= 18
+        ):
+            regime_multiplier *= 0.90
+                
+        # Get current price
+        current_price = round(float(latest["Close"]), 2)
+
+        # Calculate 50-day and 200-day SMAs for trend analysis
+        sma_50 = None
+        sma_200 = None
+        if len(hist) >= 200:
+            sma_200 = round(hist['Close'].rolling(200).mean().iloc[-1], 2)
+        if len(hist) >= 50:
+            sma_50 = round(hist['Close'].rolling(50).mean().iloc[-1], 2)
+        # Determine trend label
+        if sma_200 is None:
+            trend_label = "Insufficient data (need 200 days)"
+        elif current_price > sma_200:
+            trend_label = "Bullish (above 200 SMA)"
+        elif sma_50 is not None and current_price < sma_50:
+            trend_label = "Bearish (below 50 SMA)"
+        else:
+            trend_label = "Neutral / Sideways"
+
+        # Optional: also keep the boolean (convert to Python bool for JSON serialization)
+        price_above_200 = bool(sma_200 is not None and current_price > sma_200)
+        
+        # Calculate ATR-based stop-loss and take-profit levels
+        # DEFI: widened multipliers to absorb crypto-sensitive whipsaw (stop 2->2.5x,
+        # target 3->4x). Tighter MSFT-style stops get knocked out by normal noise on DEFI.
+        stop_loss = round(current_price - (atr_14 * 2.5), 2)  # 2.5x ATR below current price
+        take_profit = round(current_price + (atr_14 * 4), 2)  # 4x ATR above current price
+        
+        # Calculate suggested position size based on ATR (DEFI: risk 1% per trade,
+        # halved from MSFT's 2% — high vol means each trade puts more % at risk
+        # per dollar sized, so we cut risk-per-trade in half).
+        risk_per_trade_pct = 0.01
+        risk_amount = portfolio["cash"] * risk_per_trade_pct
+        base_shares = int(risk_amount / (atr_14 * 2.5)) if atr_14 > 0 else 0  # 2.5x ATR stop
+        
+        # Apply regime-based position sizing
+        suggested_shares = int(base_shares * regime_multiplier)
+        
+       # === NEW: Full multipliers + Live-Small risk scaling ===
+        metrics = calculate_portfolio_metrics(portfolio, current_price)
+        drawdown_pct = metrics["current_drawdown_pct"]
+        dd_level, dd_name, dd_size_multiplier = get_drawdown_level(drawdown_pct)
+
+        streak_multiplier = get_loss_streak_multiplier(portfolio)
+
+        # Apply remaining multipliers
+        suggested_shares = int(suggested_shares * dd_size_multiplier * streak_multiplier)
+
+        # === GLOBAL RISK SCALE FOR --live-small ===
+        risk_scale = get_risk_scale(args) if 'args' in locals() else 1.0
+        suggested_shares = int(suggested_shares * risk_scale)
+
+        # Safety floor
+        if suggested_shares < 1 and risk_scale > 0:
+            suggested_shares = 1
+
+        # Add unrealized PnL percentage for easier use
+        unrealized_pnl_pct = round(metrics["unrealized_pnl"] / (portfolio["shares"] * current_price) * 100, 2) if portfolio["shares"] > 0 else 0.0
+        
+        # Build the JSON packet with current portfolio state - all values rounded
+        packet = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d"),
+            "symbol": "DEFI",
+            "portfolio": {
+                "cash": round(portfolio["cash"], 2),
+                "shares": portfolio["shares"],
+                "cost_basis": round(portfolio["cost_basis"], 2),
+                "total_equity": metrics["total_equity"],
+                "unrealized_pnl": metrics["unrealized_pnl"],
+                "total_return_pct": metrics["total_return_pct"],
+                "current_drawdown_pct": metrics["current_drawdown_pct"],
+                "unrealized_pnl_pct": unrealized_pnl_pct,
+                "drawdown_level": dd_level,
+                "drawdown_name": dd_name,
+                "drawdown_size_multiplier": dd_size_multiplier,
+                "consecutive_loss_streak": portfolio.get("consecutive_loss_streak", 0),
+                "max_consecutive_losses": portfolio.get("max_consecutive_losses", 4),  # DEFI: tightened
+                "loss_streak_multiplier": get_loss_streak_multiplier(portfolio),  # or calculate inline
+            },
+            "market_data": {
+                "price": current_price,
+                "history": close_history,
+                "volume": int(latest["Volume"]),
+                "volatility": volatility,
+                "rsi_14": rsi_14,
+                "atr_14": atr_14,
+                "atr_percentile": atr_percentile,
+                "atr_expansion_ratio": atr_expansion_ratio,
+                "market_regime": regime,
+                "regime_multiplier": regime_multiplier,
+                "regime_days_in_state": regime_days,
+                "regime_changed_today": (regime_days == 1),
+                "stop_loss_suggestion": stop_loss,
+                "take_profit_suggestion": take_profit,
+                "suggested_position_size": suggested_shares,
+                "sma_50": sma_50,
+                "sma_200": sma_200,
+                "price_above_200_sma": price_above_200,
+                "trend_label": trend_label,   # ← this is the string Grok will see
+                "latest_volume": int(latest["Volume"]),
+                "avg_volume_20d": avg_vol_20,
+                "relative_volume": rel_volume,
+            },
+            "constraints": {
+                # DEFI-tuned constraints (vs MSFT):
+                # - max_position_size_pct halved (0.20 -> 0.10) due to lower liquidity
+                # - risk_per_trade_pct halved (0.02 -> 0.01) due to higher volatility
+                # - min_atr / max_atr rescaled to DEFI's observed price range
+                #   (~$90 with ATR ~1.2; tighter than MSFT but anchored to live data)
+                "max_position_size_pct": 0.10,
+                "max_drawdown_pct": 0.10,
+                "risk_per_trade_pct": 0.01,
+                "min_atr": 0.20,
+                "max_atr": 4.50
+            }
+        }
+        
+        # logger.info(f"Successfully fetched DEFI data. Price: ${current_price:.2f}, Volatility: {volatility:.4f}, RSI: {rsi_14}, ATR: {atr_14} (percentile: {atr_percentile}%), Expansion: {atr_expansion_ratio}x, Regime: {regime}, Stop: ${stop_loss}, Target: ${take_profit}, Suggested shares: {suggested_shares}, Latest Volume: {int(latest['Volume'])}, Avg Volume 20d: {avg_vol_20}, Relative Volume: {rel_volume}")
+        logger.info(
+            f"Successfully fetched DEFI data. "
+            f"Price: ${current_price:.2f}, RSI: {rsi_14}, ATR: {atr_14}, Regime: {regime}, "
+            f"Suggested shares: {suggested_shares}, Rel Vol: {rel_volume:.2f} "
+            f"(Latest Vol: {int(latest['Volume'])}, Avg 20d: {avg_vol_20})"
+        )
+        return packet
+        
+    except Exception as e:
+        logger.error(f"Error fetching DEFI data: {e}")
+        return None
+
+# Grok API call functions
+def query_grok(packet: Dict[str, Any], api_key: str) -> Optional[Dict[str, Any]]:
+    """Query Grok AI for trading decision with error handling"""
+    url = "https://api.x.ai/v1/chat/completions"
+    
+    logger.info("Sending data packet to Grok for analysis...")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    prompt = f"""
+You are an automated trading decision agent.
+
+You are trading DEFI, a small-cap, crypto-sensitive thematic ETF.
+It is much more volatile and less liquid than mega-cap tech.
+Be more conservative with entries and quicker to take profit/cut losses
+than you would on a name like MSFT.
+
+Allowed actions: BUY, SELL, HOLD
+
+HARD BLOCKS (override all else):
+- drawdown_level >= 2 → HOLD or SELL only (never BUY)
+- loss_streak_multiplier <= 0.0 or consecutive_loss_streak >= max_consecutive_losses → HOLD or SELL only
+- drawdown_level == 1 → BUY only if RSI < 25 AND "Bullish" in trend_label AND suggested_position_size >= 1
+
+Core rules:
+- Respect suggested_position_size (already regime- & drawdown-adjusted) — never suggest larger.
+- Only BUY if suggested_position_size >= 1.
+- Prioritize trend_label over short-term RSI unless RSI is extreme (<25 or >85).
+- Strongly prefer BUY in "Bullish" (or price_above_200_sma=True) + low/oversold RSI.
+- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold (RSI < 25) + Bullish.
+- If regime_days_in_state >= 18 and "Volatility" in market_regime → prefer reduced size (soft damper active).
+- If regime_changed_today → extra caution on new entries.
+- SELL on RSI >= 85 (overbought) regardless of trend (DEFI: tightened from 88
+  because small-cap, crypto-sensitive names mean-revert from overbought faster).
+- For SELL with profit: approximate tiers (<7% full, 7-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
+- Extreme oversold (RSI < 25) can still justify a BUY even in a Bearish trend if drawdown is low (<2%) and suggested_position_size is valid.
+
+In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic
+(e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=8.8 in Bearish trend").
+
+Output format (exact, nothing else):
+ACTION: <BUY or SELL or HOLD>
+REASON: <one short sentence>
+
+Data packet:
+{json.dumps(packet, indent=2)}
+"""
+
+    body = {
+        "model": "grok-4-1-fast-reasoning-latest",
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=body, timeout=30)
+        logger.info(f"Response status code: {response.status_code}")
+        logger.info(f"Response headers: {response.headers}")
+        if response.status_code == 403:
+            logger.error(f"403 Forbidden error. Response text: {response.text}")
+        response.raise_for_status()
+        
+        result = response.json()
+        logger.info("Successfully received response from Grok")
+        return result
+        
+    except requests.exceptions.Timeout:
+        logger.error("Grok API request timed out")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Grok API request failed: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Grok response as JSON: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error calling Grok API: {e}")
+        return None
+
+
+def parse_action(response: Dict[str, Any]) -> tuple[str, str]:
+    """Parse Grok response to extract trading action and reason"""
+    try:
+        text = response["choices"][0]["message"]["content"]
+        logger.info(f"Grok response: {text.strip()}")
+        
+        # Extract reason if present
+        reason = "No reason provided"
+        if "REASON:" in text:
+            reason = text.split("REASON:")[1].strip().split("\n")[0]
+
+        # Parse ACTION line explicitly to avoid false positives from free text.
+        action = "HOLD"
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("ACTION:"):
+                candidate = stripped.split(":", 1)[1].strip().upper()
+                if candidate in {"BUY", "SELL", "HOLD"}:
+                    action = candidate
+                else:
+                    logger.warning(f"Invalid ACTION value from Grok: {candidate}. Defaulting to HOLD.")
+                break
+
+        return action, reason
+        
+    except (KeyError, IndexError) as e:
+        logger.error(f"Error parsing Grok response: {e}. Raw response: {response}")
+        return "HOLD", "Error parsing response"  # Default to safe action
+# Alpaca order functions
+
+def place_alpaca_order(api_key: str, secret_key: str, symbol: str, qty: int, side: str) -> Optional[Dict[str, Any]]:
+    """Place order with Alpaca API with error handling"""
+    url = "https://paper-api.alpaca.markets/v2/orders"
+
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": secret_key,
+        "Content-Type": "application/json"
+    }
+
+    order = {
+        "symbol": symbol,
+        "qty": qty,
+        "side": side.lower(),   # "buy" or "sell"
+        "type": "market",
+        "time_in_force": "day"
+    }
+    
+    logger.info(f"Placing {side.upper()} order for {qty} shares of {symbol}")
+
+    try:
+        r = requests.post(url, json=order, headers=headers, timeout=15)
+        r.raise_for_status()
+        
+        result = r.json()
+        logger.info(f"Order placed successfully. Order ID: {result.get('id', 'Unknown')}")
+        return result
+        
+    except requests.exceptions.Timeout:
+        logger.error("Alpaca API request timed out")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Alpaca API request failed: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Alpaca response as JSON: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error placing order: {e}")
+        return None
+
+def can_open_new_position(portfolio: Dict[str, Any]) -> tuple[bool, str]:
+    """Helper to check if we can open new positions based on consecutive loss streaks"""
+    streak = portfolio.get("consecutive_loss_streak", 0)
+    max_streak = portfolio.get("max_consecutive_losses", 5)
+    
+    if streak >= max_streak:
+        return False, f"Loss streak protection active ({streak}/{max_streak} consecutive losses) — new buys blocked"
+    return True, "OK"
+
+def should_block_buy(packet: Dict) -> Tuple[bool, str]:
+    """
+    Final safety check — never allow BUY if hard rules are violated.
+    This runs after Grok's decision (or deterministic fallback).
+    """
+    port = packet.get("portfolio", {})
+    drawdown_level = port.get("drawdown_level", 0)
+    consecutive_losses = port.get("consecutive_loss_streak", 0)
+    max_losses = port.get("max_consecutive_losses", 5)
+    loss_multiplier = port.get("loss_streak_multiplier", 1.0)
+
+    if drawdown_level >= 2:
+        return True, "Blocked: drawdown_level >= 2 (Restricted or Emergency)"
+    
+    if loss_multiplier <= 0.0 or consecutive_losses >= max_losses:
+        return True, "Blocked: loss streak protection active"
+    
+    return False, ""
+
+def parse_sell_percentage(reason: str, packet: dict) -> float:
+    """Extract approximate sell % from Grok's reason if mentioned."""
+    import re
+    match = re.search(r'(?:sell|exit|reduce)\s*(?:about|around|roughly)?\s*(\d+)%?', reason, re.IGNORECASE)
+    if match:
+        try:
+            pct = float(match.group(1)) / 100.0
+            if 0.01 <= pct <= 1.0:
+                return pct
+        except:
+            pass
+    
+    # Default fallback tiers
+    unrealized_pct = packet["portfolio"].get("unrealized_pnl_pct", 0.0)
+    if unrealized_pct < 8.0:
+        return 1.0
+    elif unrealized_pct < 15.0:
+        return 0.30
+    elif unrealized_pct < 25.0:
+        return 0.40
+    else:
+        return 0.60
+    
+# Convert Grok's action into an Alpaca trade
+def execute_trade(
+    action: str,
+    reason: str,
+    packet: Dict[str, Any],
+    api_key: Optional[str],
+    secret_key: Optional[str],
+    dry_run: bool = False,
+    shadow_mode: bool = False,
+) -> bool:
+    """Execute trade based on Grok decision with comprehensive validation and portfolio update"""
+    price = packet["market_data"]["price"]
+    suggested_shares = packet["market_data"]["suggested_position_size"]
+    portfolio = packet["portfolio"]
+    constraints = packet["constraints"]
+    sell_pct = parse_sell_percentage(reason, packet)
+    
+    cash = portfolio["cash"]
+    shares = portfolio["shares"]
+    cost_basis = portfolio.get("cost_basis", 0.0)
+    current_drawdown_pct = portfolio.get("current_drawdown_pct", 0.0)
+    total_equity = portfolio.get("total_equity", cash)
+    
+    logger.info(f"Executing action: {action} | Current portfolio: ${cash:.2f} cash, {shares} shares, Equity: ${total_equity:.2f}, Drawdown: {current_drawdown_pct:.2f}%")
+
+    # Shadow mode safety net: should never reach here, but block execution just in case.
+    if shadow_mode:
+        logger.warning("execute_trade() called in shadow_mode — blocking execution (bug guard)")
+        return False
+
+    # Enforce ATR guardrails at execution time (not just in model prompt)
+    atr_14 = packet.get("market_data", {}).get("atr_14", 0.0)
+    min_atr = constraints.get("min_atr", 0.0)
+    max_atr = constraints.get("max_atr", float("inf"))
+    if action in {"BUY", "SELL"} and not (min_atr <= atr_14 <= max_atr):
+        logger.warning(
+            f"TRADE BLOCKED: ATR ({atr_14}) outside allowed range [{min_atr}, {max_atr}]"
+        )
+        if not dry_run:
+            log_trade("BLOCKED_ATR", 0, price, f"ATR out of bounds: {atr_14}", total_equity, {
+                "atr_14": atr_14,
+                "min_atr": min_atr,
+                "max_atr": max_atr,
+                "requested_action": action
+            })
+        else:
+            logger.info("DRY-RUN: Would record BLOCKED_ATR event")
+        return False
+    
+    # Check drawdown protection
+    max_drawdown_pct = constraints.get("max_drawdown_pct", 0.10) * 100  # Convert to percentage
+    if current_drawdown_pct > max_drawdown_pct:
+        logger.warning(f"TRADE BLOCKED: Current drawdown ({current_drawdown_pct:.2f}%) exceeds maximum allowed ({max_drawdown_pct:.2f}%)")
+        if not dry_run:
+            log_trade("BLOCKED_DRAWDOWN", 0, price, f"Drawdown too high: {current_drawdown_pct:.2f}%", total_equity)
+        else:
+            logger.info("DRY-RUN: Would record BLOCKED_DRAWDOWN event")
+        return False
+    
+    # Safety override: if Grok suggests BUY but we have hard reasons to block, override to HOLD
+    if action == "BUY":
+        blocked, block_reason = should_block_buy(packet)
+        if blocked:
+            action = "HOLD"
+            reason = f"{reason} | {block_reason} (safety override)"
+            logger.warning(f"SAFETY OVERRIDE: Grok suggested BUY but blocked → {block_reason}")
+
+    # Idempotency guard: do not place more than one live trade per day.
+    if action in {"BUY", "SELL"} and not dry_run and has_executed_trade_today():
+        logger.warning("TRADE BLOCKED: A live BUY/SELL trade has already been executed today")
+        log_trade("BLOCKED_DUPLICATE", 0, price, "Duplicate daily trade prevented", total_equity, {
+            "requested_action": action
+        })
+        return False
+
+    # Consecutive loss streak protection
+    if action == "BUY":
+        # Consecutive loss streak protection
+        allowed, block_reason = can_open_new_position(portfolio)
+        if not allowed:
+            logger.warning(f"BUY BLOCKED: {block_reason}")
+            if not dry_run:
+                log_trade("BLOCKED_LOSS_STREAK", 0, price, block_reason, total_equity)
+            else:
+                logger.info(f"DRY-RUN: Would block BUY → {block_reason}")
+            return False
+
+    if action == "BUY":
+        # Calculate maximum affordable shares with cash
+        max_affordable = int(cash // price)
+        
+        # Apply max position size constraint (20% of total equity)
+        max_position_value = total_equity * constraints.get("max_position_size_pct", 0.20)
+        current_position_value = shares * price
+        available_position_capacity = max_position_value - current_position_value
+        max_by_position_limit = int(available_position_capacity / price) if available_position_capacity > 0 else 0
+    
+        # Use the minimum of: suggested shares, affordable shares, position limit
+        qty = min(suggested_shares, max_affordable, max_by_position_limit) if suggested_shares > 0 else 0
+        
+        # Apply loss streak protection multiplier
+        if action == "BUY":
+            streak_multiplier = get_loss_streak_multiplier(portfolio)
+            if streak_multiplier < 1.0:
+                logger.info(f"Loss streak {portfolio['consecutive_loss_streak']} → applying size multiplier {streak_multiplier}")
+            qty = int(qty * streak_multiplier)
+
+            # Probe floor: multipliers may round a genuine BUY signal down to 0.
+            # Enforce 1-share minimum when base signal was positive and capacity allows.
+            if qty <= 0 and suggested_shares > 0 and max_affordable >= 1 and max_by_position_limit >= 1:
+                qty = 1
+
+            if qty <= 0:
+                logger.warning(f"BUY reduced to 0 shares due to loss streak protection")
+                if not dry_run:
+                    log_trade("BLOCKED_LOSS_STREAK", 0, price, f"Streak {portfolio['consecutive_loss_streak']} → size reduced to 0", total_equity)
+                return False
+            
+        logger.info(f"Position sizing: Suggested={suggested_shares}, Affordable={max_affordable}, PositionLimit={max_by_position_limit}, Final={qty}")
+        
+        if qty <= 0:
+            logger.warning("Cannot buy: quantity is 0 after applying constraints")
+            if not dry_run:
+                log_trade("BLOCKED_BUY", 0, price, "No capacity to buy (constraints)", total_equity)
+            else:
+                logger.info("DRY-RUN: Would record BLOCKED_BUY event")
+            return False
+            
+        if qty > 0:
+            if dry_run:
+                execution_price = float(price)
+                new_cash = cash - (qty * execution_price)
+                new_shares = shares + qty
+                old_cost_basis = cost_basis if shares > 0 else 0
+                new_cost_basis = ((shares * old_cost_basis) + (qty * execution_price)) / new_shares if new_shares > 0 else 0
+                new_equity = new_cash + (new_shares * execution_price)
+                logger.info(
+                    f"DRY-RUN BUY: Would buy {qty} DEFI at ${execution_price:.2f}. "
+                    f"Simulated portfolio -> cash: ${new_cash:.2f}, shares: {new_shares}, cost_basis: ${new_cost_basis:.2f}, equity: ${new_equity:.2f}"
+                )
+                return True
+
+            if not api_key or not secret_key:
+                logger.error("Missing Alpaca credentials for live BUY execution")
+                return False
+
+            result = place_alpaca_order(api_key, secret_key, "DEFI", qty, "buy")
+            if result:
+                fill_price_raw = result.get("filled_avg_price")
+                execution_price = float(fill_price_raw) if fill_price_raw is not None else float(price)
+                # Calculate new portfolio state
+                new_cash = cash - (qty * execution_price)
+                new_shares = shares + qty
+                old_cost_basis = cost_basis if shares > 0 else 0
+                new_cost_basis = ((shares * old_cost_basis) + (qty * execution_price)) / new_shares if new_shares > 0 else 0
+                
+                # Load current portfolio to preserve other fields
+                current_portfolio = load_portfolio_state()
+                updated_portfolio = {
+                    **current_portfolio,
+                    "cash": new_cash,
+                    "shares": new_shares,
+                    "cost_basis": new_cost_basis
+                }
+                
+                # Update peak value if needed
+                new_equity = new_cash + (new_shares * execution_price)
+                updated_portfolio["peak_value"] = max(current_portfolio.get("peak_value", new_equity), new_equity)
+                
+                try:
+                    save_portfolio_state(updated_portfolio)
+                    # Log trade after successful save
+                    log_trade("BUY", qty, execution_price, reason, new_equity, {
+                        "rsi_14": packet["market_data"]["rsi_14"],
+                        "atr_14": packet["market_data"]["atr_14"],
+                        "regime": packet["market_data"]["market_regime"]
+                    })
+                    logger.info(f"BUY executed: {qty} shares at ${execution_price:.2f}. New portfolio: ${new_cash:.2f} cash, {new_shares} shares")
+                    return True
+                except Exception as e:
+                    logger.critical(f"CRITICAL ERROR: Trade executed but portfolio save failed: {e}")
+                    logger.critical(f"Manual intervention required: BUY {qty} shares at ${execution_price:.2f} was executed")
+                    return False
+            else:
+                logger.error("BUY order failed")
+                return False
+        else:
+            logger.warning("Not enough cash to buy shares")
+            return False
+
+    elif action == "SELL":
+        if shares <= 0:
+            logger.warning("No shares to sell")
+            if not dry_run:
+                log_trade("BLOCKED_SELL", 0, price, "No shares to sell", total_equity)
+            else:
+                logger.info("DRY-RUN: Would record BLOCKED_SELL event")
+            return False
+        # Calculate sell percentage
+        sell_pct = parse_sell_percentage(reason, packet)
+        sell_pct = min(1.0, max(0.01, sell_pct)) # Ensure between 1% and 100%
+        
+        qty = int(portfolio["shares"] * sell_pct)
+        if qty < 1 and portfolio["shares"] > 0:
+            qty = portfolio["shares"]  # avoid dust
+        qty = min(qty, shares) # cannot sell more than we have
+
+        # Get current unrealized PnL % (re-calculate to be sure)
+        position_value = shares * price
+        unrealized_pnl = (price - cost_basis) * shares if shares > 0 else 0.0
+        unrealized_pnl_pct = round((unrealized_pnl / position_value) * 100, 2) if position_value > 0 else 0.0
+
+        # Determine sell percentage
+        if unrealized_pnl_pct < 8.0:
+            sell_pct = 1.0          # Full sell if gains are small or loss
+        elif unrealized_pnl_pct < 15.0:
+            sell_pct = 0.30         # 30%
+        elif unrealized_pnl_pct < 25.0:
+            sell_pct = 0.40         # 40%
+        else:
+            sell_pct = 0.60         # 60% at high gains
+
+        # Override to full sell in Bearish trend
+        trend_label = packet["market_data"].get("trend_label", "Unknown")
+        if "Bearish" in trend_label:
+            sell_pct = 1.0
+            reason += " (full exit due to Bearish trend)"
+
+        qty = int(shares * sell_pct)
+        if qty < 1:
+            qty = shares  # Minimum 1 share or full if fractional rounding down
+
+        logger.info(f"SELL decision: Unrealized PnL {unrealized_pnl_pct:.2f}%, "
+                    f"Trend: {trend_label}, Selling {sell_pct*100:.0f}% → {qty} shares")
+
+        if dry_run:
+            execution_price = float(price)
+            new_cash = cash + (qty * execution_price)
+            realized_pnl = (execution_price - cost_basis) * qty
+            remaining_shares = max(shares - qty, 0)
+            if remaining_shares > 0:
+                new_cost_basis = cost_basis
+            else:
+                new_cost_basis = 0.0
+            new_equity = new_cash + (remaining_shares * execution_price)
+            logger.info(
+                f"DRY-RUN SELL: Would sell {qty} DEFI at ${execution_price:.2f}. "
+                f"Simulated portfolio -> cash: ${new_cash:.2f}, shares: {remaining_shares}, cost_basis: ${new_cost_basis:.2f}, "
+                f"realized_pnl: ${realized_pnl:.2f}, equity: ${new_equity:.2f}"
+            )
+            return True
+
+        if not api_key or not secret_key:
+            logger.error("Missing Alpaca credentials for live SELL execution")
+            return False
+
+        result = place_alpaca_order(api_key, secret_key, "DEFI", qty, "sell")
+        if result:
+            fill_price_raw = result.get("filled_avg_price")
+            execution_price = float(fill_price_raw) if fill_price_raw is not None else float(price)
+            # Update portfolio
+            new_cash = cash + (qty * execution_price)
+            realized_pnl = (execution_price - cost_basis) * qty
+
+            # Weighted average cost basis for remaining shares
+            if shares - qty > 0:
+                remaining_shares = shares - qty
+                new_cost_basis = ((shares * cost_basis) - (qty * cost_basis)) / remaining_shares
+            else:
+                remaining_shares = 0
+                new_cost_basis = 0.0
+
+            current_portfolio = load_portfolio_state()
+            updated_portfolio = {
+                **current_portfolio,
+                "cash": new_cash,
+                "shares": remaining_shares,
+                "cost_basis": round(new_cost_basis, 2)
+            }
+
+            # Update peak value
+            new_equity = new_cash + (remaining_shares * execution_price)
+            updated_portfolio["peak_value"] = max(
+                current_portfolio.get("peak_value", new_equity), new_equity
+            )
+
+            try:
+                save_portfolio_state(updated_portfolio)
+                realized_pnl = (execution_price - cost_basis) * qty
+                was_win = realized_pnl > 0
+                
+                current_streak = current_portfolio.get("consecutive_loss_streak", 0)
+                
+                if was_win:
+                    new_streak = 0
+                    logger.info(f"Realized WIN → loss streak RESET to 0 (PnL: ${realized_pnl:.2f})")
+                else:
+                    new_streak = current_streak + 1
+                    logger.info(f"Realized LOSS → streak now {new_streak} (PnL: ${realized_pnl:.2f})")
+                
+                updated_portfolio["consecutive_loss_streak"] = new_streak
+                
+                # Re-save with streak
+                save_portfolio_state(updated_portfolio)
+                
+                log_trade(
+                    "SELL_PARTIAL" if sell_pct < 1.0 else "SELL_FULL",
+                    qty,
+                    execution_price,
+                    f"{reason} | PnL {unrealized_pnl_pct:.2f}% | Sold {sell_pct*100:.0f}%",
+                    new_equity,
+                    {
+                        "realized_pnl": round(realized_pnl, 2),
+                        "remaining_shares": remaining_shares,
+                        "rsi_14": packet["market_data"]["rsi_14"],
+                        "atr_14": packet["market_data"]["atr_14"],
+                        "regime": packet["market_data"]["market_regime"],
+                        "realized_pnl": round(realized_pnl, 2),
+                        "loss_streak_after": new_streak,
+                        "was_win": was_win
+                    }
+                )
+                logger.info(f"SELL executed: {qty} shares ({sell_pct*100:.0f}%) at ${execution_price:.2f}. "
+                            f"Realized P&L: ${realized_pnl:.2f}. Remaining shares: {remaining_shares}")
+                return True
+            except Exception as e:
+                logger.critical(f"CRITICAL: SELL executed but save failed: {e}")
+                logger.critical(f"Manual check required: Sold {qty} shares of DEFI")
+                return False
+        else:
+            logger.error("SELL order failed")
+            return False
+    
+    else:  # HOLD or any other action
+        logger.info(f"Holding position: {action} - {reason}")
+        if not dry_run:
+            log_trade("HOLD", 0, price, reason, total_equity, {
+                "rsi_14": packet["market_data"]["rsi_14"],
+                "atr_14": packet["market_data"]["atr_14"],
+                "regime": packet["market_data"]["market_regime"]
+            })
+        else:
+            logger.info("DRY-RUN HOLD: No trade, no portfolio mutation")
+        return True
+
+def send_email_summary(
+    packet: Optional[dict] = None,
+    action: str = "SKIPPED",
+    reason: str = "",
+    dry_run: bool = False,
+    log_path: str = str(LOG_FILE)
+):
+    """
+    Send summary email with:
+    - Key metrics
+    - Today's log entries only (in body — no attachment)
+    """
+    load_env_with_fallback()  # make sure .env is fresh
+
+    sender    = os.getenv("EMAIL_SENDER") or ""
+    password  = os.getenv("EMAIL_PASSWORD") or ""
+    recipient = os.getenv("EMAIL_RECIPIENT")
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port   = int(os.getenv("SMTP_PORT", "587"))
+
+    if not all([sender, password, recipient]):
+        logger.warning("Email credentials missing in .env — skipping email")
+        return
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_prefix = today_str + " "   # e.g. "2025-03-15 "
+
+    # ── Collect today's log lines ─────────────────────────────────────
+    log_lines_today = []
+    try:
+        if os.path.exists(log_path):
+            with open(log_path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    # Most basic match: line starts with today's date + space
+                    if line.startswith(today_prefix):
+                        log_lines_today.append(line.rstrip())
+        else:
+            log_lines_today.append("(log file not found)")
+    except Exception as e:
+        log_lines_today = [f"Could not read log: {type(e).__name__}: {e}"]
+
+    # Limit size — prevent enormous emails if something is spamming logs
+    if len(log_lines_today) > 400:
+        log_lines_today = (
+            log_lines_today[:350] +
+            ["", "… (truncated — too many lines) …", ""] +
+            log_lines_today[-50:]
+        )
+
+    # ── Build email body ──────────────────────────────────────────────
+    body_parts = []
+
+    body_parts.append(f"DEFI Trading Bot — Daily Run Summary")
+    body_parts.append(f"Date:          {today_str}")
+    body_parts.append(f"Mode:          {'DRY-RUN' if dry_run else 'LIVE'}")
+    body_parts.append(f"Action:        {action}")
+    body_parts.append(f"Reason:        {reason or '—'}")
+    body_parts.append("-" * 65)
+
+    if packet:
+        md  = packet.get("market_data", {})
+        port = packet.get("portfolio", {})
+        body_parts.extend([
+            f"Price:         ${md.get('price', '—'):.2f}",
+            f"RSI(14):       {md.get('rsi_14', '—')}",
+            f"ATR(14):       {md.get('atr_14', '—')}",
+            f"Regime:        {md.get('market_regime', '—')} "
+              f"({md.get('regime_days_in_state', '—')} days)",
+            f"Drawdown:      {port.get('current_drawdown_pct', '—'):.2f}%",
+            f"Total Equity:  ${port.get('total_equity', port.get('cash', '—')):.2f}",
+            "-" * 65
+        ])
+
+    # Today's log entries
+    if log_lines_today:
+        body_parts.append("Today's log entries:")
+        body_parts.append("")
+        body_parts.extend(log_lines_today)
+    else:
+        body_parts.append("(No log entries found for today)")
+
+    body = "\n".join(body_parts)
+
+    # ── Build MIME message ────────────────────────────────────────────
+    msg = MIMEMultipart()
+    msg["From"]    = sender # type: ignore
+    msg["To"]      = recipient # type: ignore
+    msg["Subject"] = f"DEFI Bot Daily Run • {today_str} • {action} ({'DRY' if dry_run else 'LIVE'})"
+
+    msg.attach(MIMEText(body, "plain", _charset="utf-8"))
+
+    # ── Send ──────────────────────────────────────────────────────────
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            # Only call login if sender and password are non-empty strings
+            if sender and password:
+                server.login(sender, password)
+            server.send_message(msg)
+        logger.info(f"Daily summary email sent to {recipient}")
+    except Exception as e:
+        logger.error(f"Failed to send summary email: {e}")
+
+
+def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: bool = False):
+    """Main trading loop with comprehensive error handling and logging"""
+    packet = None
+    action = None
+    reason = None
+    risk_scale = get_risk_scale(args) if 'args' in locals() else 1.0
+    mode = "LIVE-SMALL" if getattr(args, 'live_small', False) else ("DRY-RUN" if dry_run else "LIVE")
+    logger.info(f"=== Starting {mode} Mode | Risk Scale: {risk_scale:.0%} ===")
+    logger.info("=== Starting Daily Trading Loop ===")
+    if dry_run:
+        logger.info("DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.")
+    # Check if market is open (basic weekend check)
+    if not ignore_market_check and not is_market_open():
+        logger.warning("Market is closed (weekend/holiday). Exiting.")
+        action = "SKIPPED"
+        return
+    if ignore_market_check:
+        logger.warning("Market check ignored via flag; continuing execution.")
+    # Load environment variables from repo root .env, with local fallback.
+    load_env_with_fallback()
+    # API Keys
+    GROK_API_KEY = os.getenv("GROK_API_KEY")
+    ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+    ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+    # Check required API keys
+    if not GROK_API_KEY:
+        logger.error("GROK_API_KEY not found in environment variables. Please check your .env file.")
+        action = "SKIPPED"
+        return
+    if not dry_run:
+        if not ALPACA_API_KEY:
+            logger.error("ALPACA_API_KEY not found in environment variables. Please check your .env file.")
+            action = "SKIPPED"
+            return
+        if not ALPACA_SECRET_KEY:
+            logger.error("ALPACA_SECRET_KEY not found in environment variables. Please check your .env file.")
+            action = "SKIPPED"
+            return
+    try:
+        # Step 1: Fetch market data
+        packet = fetch_defi_daily()
+        if packet is None:
+            logger.error("Failed to fetch market data. Aborting trading loop.")
+            action = "SKIPPED"
+            return
+        # Check local deterministic filters before calling Grok
+        auto_hold, reason = should_auto_hold(packet)
+        if auto_hold and not shadow_mode:
+            logger.info(f"AUTO-HOLD (local filter): {reason} | RSI={packet['market_data']['rsi_14']:.1f}, Regime={packet['market_data']['market_regime']}, Rel Vol={packet['market_data']['relative_volume']:.2f}")
+            price = packet["market_data"]["price"]
+            total_equity = packet["portfolio"].get("total_equity", packet["portfolio"]["cash"])
+            action = "HOLD"
+            if not dry_run:
+                log_trade(
+                    "HOLD",
+                    0,
+                    price,
+                    f"Local filter HOLD: {reason}",
+                    total_equity,
+                    {
+                        "rsi_14": packet["market_data"]["rsi_14"],
+                        "atr_14": packet["market_data"]["atr_14"],
+                        "regime": packet["market_data"]["market_regime"],
+                        "filter_reason": reason
+                    }
+                )
+                updated_portfolio = load_portfolio_state()
+                updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
+                updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
+                save_portfolio_state(updated_portfolio)
+            return  # Skip Grok and execution
+        if auto_hold and shadow_mode:
+            logger.info(f"AUTO-HOLD (would fire, but shadow_mode — querying Grok anyway): {reason}")
+        # ── Step 2: Query Grok (single call, reused by both shadow and normal) ──
+        grok_action = None
+        grok_reason = None
+        grok_success = False
+
+        response = query_grok(packet, GROK_API_KEY)
+        if response is not None:
+            grok_action, grok_reason = parse_action(response)
+            grok_success = True
+        else:
+            grok_reason = "Grok query failed"
+
+        # ── Shadow mode: log Grok's decision then exit without executing ──
+        if shadow_mode:
+            log_entry = {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "deterministic_action": "HOLD" if auto_hold else "GROK_DECIDED",
+                "deterministic_reason": reason,
+                "grok_action": grok_action,
+                "grok_reason": grok_reason,
+                "shadow_mode": True,
+                "executed": False,
+                "packet_summary": {
+                    "rsi": packet["market_data"].get("rsi_14"),
+                    "regime": packet["market_data"].get("market_regime"),
+                    "drawdown_pct": packet["portfolio"].get("current_drawdown_pct"),
+                    "unrealized_pct": packet["portfolio"].get("unrealized_pnl_pct"),
+                }
+            }
+            shadow_log_path = BASE_DIR / "shadow_grok_log.jsonl"
+            with open(shadow_log_path, "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+            action = grok_action if grok_success else "HOLD"
+            reason = grok_reason if grok_success else "Grok unavailable - default HOLD"
+            logger.info(f"SHADOW-MODE: Grok says {action} — {reason} (no execution)")
+            return  # shadow mode: log only, no execution
+
+        # Normal mode: use Grok result for execution
+        if not grok_success:
+            logger.error("Failed to get response from Grok. Aborting trading loop.")
+            action = "SKIPPED"
+            return
+        action, reason = grok_action, grok_reason
+        logger.info(f"Grok decision: {action} - {reason}")
+        # Step 3: Execute trade
+        assert action is not None  # guaranteed: we returned early if grok_success was False
+        success = execute_trade(action, reason, packet, ALPACA_API_KEY, ALPACA_SECRET_KEY, dry_run=dry_run, shadow_mode=shadow_mode)
+        if packet is not None and not dry_run:
+            updated_portfolio = load_portfolio_state()
+            updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
+            updated_portfolio["regime_days_in_state"] = packet["market_data"]["regime_days_in_state"]
+            save_portfolio_state(updated_portfolio)
+            logger.info(f"Regime persistence updated: {packet['market_data']['market_regime']} "
+                        f"for {packet['market_data']['regime_days_in_state']} day(s)")
+        if success:
+            logger.info("=== Trading loop completed successfully ===")
+        # Quick summary line for each run into trading_log.txt
+        if packet is not None:
+            dd_pct = packet["portfolio"].get("current_drawdown_pct", 0.0)
+            regime = packet["market_data"].get("market_regime", "Unknown")
+            days_in_regime = packet["market_data"].get("regime_days_in_state", 0)
+            logger.info(f"Run summary | Drawdown: {dd_pct:.1f}% | Regime: {regime} ({days_in_regime} days) | Action: {action if action is not None else 'SKIPPED'}")
+        else:
+            logger.error("=== Trading loop completed with errors ===")
+    except KeyboardInterrupt:
+        # This is almost always a SIGINT from the terminal/IDE (e.g., VS Code re-run/stop).
+        # Log it explicitly so it doesn't look like a mysterious crash.
+        logger.warning("KeyboardInterrupt (SIGINT) received; exiting early.")
+        return
+    except Exception as e:
+        # Use logger.exception to include the full traceback in logs for post-mortems.
+        logger.exception("Unexpected error in main trading loop")
+    finally:
+        # Always send summary — even on error or early exit
+        send_email_summary(
+            packet=packet,
+            action=action if action is not None else "SKIPPED/ERROR",
+            reason=reason if reason is not None else "",
+            dry_run=dry_run
+        )
+    logger.info("=== Daily trading loop finished ===")
+        
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run daily DEFI trading loop")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate decision and execution without placing orders or writing state files"
+    )
+    parser.add_argument(
+        "--ignore-market-check",
+        action="store_true",
+        help="Bypass market open/holiday check (useful for weekend dry-runs)"
+    )
+    parser.add_argument(
+    "--shadow-grok",
+    action="store_true",
+    help="Query Grok every day in dry-run mode and log both deterministic + Grok decisions (no execution)"
+    )
+    parser.add_argument(
+    "--live-small",
+    action="store_true",
+    help="Enable live trading with reduced risk (e.g. 10% of normal size). Use with --shadow-grok for monitoring."
+    )
+    args = parser.parse_args()
+    shadow_mode = args.shadow_grok and args.dry_run or args.live_small # only active in dry-run
+    
+    BASE_DIR = Path(__file__).resolve().parent
+    TEST_DIR = BASE_DIR / "test_runs"
+    TEST_DIR.mkdir(exist_ok=True)
+
+    if args.dry_run:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        LOG_FILE = TEST_DIR / f"trading_log_dry_{ts}.txt"
+        TRADE_HISTORY_FILE = TEST_DIR / f"trade_history_dry_{ts}.json"
+    else:
+        LOG_FILE = BASE_DIR / "trading_log.txt"
+        TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
+
+    # Reconfigure the file handler to point at the correct log file.
+    # logging.basicConfig already ran at import time, so we swap the handler here.
+    root_logger = logging.getLogger()
+    for h in root_logger.handlers[:]:
+        if isinstance(h, logging.FileHandler):
+            h.close()
+            root_logger.removeHandler(h)
+    root_logger.addHandler(logging.FileHandler(LOG_FILE))
+
+    logger.info(
+        f"{'DRY-RUN' if args.dry_run else 'LIVE'}: Logging to {LOG_FILE}"
+    )
+
+    main(dry_run=args.dry_run, ignore_market_check=args.ignore_market_check, shadow_mode=shadow_mode)
