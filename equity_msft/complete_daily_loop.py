@@ -1435,6 +1435,18 @@ def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: 
                     "regime": packet["market_data"].get("market_regime"),
                     "drawdown_pct": packet["portfolio"].get("current_drawdown_pct"),
                     "unrealized_pct": packet["portfolio"].get("unrealized_pnl_pct"),
+                },
+                # Enriched fields for high-fidelity offline replay (shadow_replay.py etc.).
+                # Additive only — old logs and all execution paths are unaffected.
+                "price": packet["market_data"].get("price"),
+                "suggested_position_size": packet["market_data"].get("suggested_position_size"),
+                "atr_14": packet["market_data"].get("atr_14"),
+                "trend_label": packet["market_data"].get("trend_label"),
+                "regime": packet["market_data"].get("market_regime"),
+                "portfolio_snapshot": {
+                    "cash": packet["portfolio"].get("cash"),
+                    "shares": packet["portfolio"].get("shares"),
+                    "current_drawdown_pct": packet["portfolio"].get("current_drawdown_pct"),
                 }
             }
             shadow_log_path = BASE_DIR / "shadow_grok_log.jsonl"
