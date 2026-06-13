@@ -22,11 +22,44 @@ from shared.risk_management import (
 logger = logging.getLogger(__name__)
 
 
+# =====================================================================
+# Tunable soft gate thresholds (kept in sync with complete_daily_loop.py)
+# =====================================================================
+
+# Current conservative defaults (preserve existing behavior for backtests)
+DEFAULT_SOFT_THRESHOLDS = {
+    "neutral_rsi_low": 40.0,
+    "neutral_rsi_high": 60.0,
+    "neutral_rel_volume_max": 1.3,
+    "bullish_hold_rsi": 62.0,
+    "bearish_hold_rsi": 20.0,
+    "drawdown_caution_rsi": 35.0,
+    "max_dd_warning": 6.0,
+}
+
+# A "relaxed but still conservative" set matching the one in complete_daily_loop.py.
+# Use this when you want to backtest the effect of the relaxed gates.
+RELAXED_SOFT_THRESHOLDS = {
+    "neutral_rsi_low": 38.0,
+    "neutral_rsi_high": 62.0,
+    "neutral_rel_volume_max": 1.6,
+    "bullish_hold_rsi": 57.0,
+    "bearish_hold_rsi": 28.0,
+    "drawdown_caution_rsi": 40.0,
+    "max_dd_warning": 6.0,
+}
+
+
 def should_auto_hold(
     packet: Dict[str, Any],
     thresholds: Dict[str, float] | None = None,
 ) -> Tuple[bool, str]:
-    """Replicate the local HOLD gate from the live loop for deterministic backtests."""
+    """Replicate the local HOLD gate from the live loop for deterministic backtests.
+
+    Pass DEFAULT_SOFT_THRESHOLDS or RELAXED_SOFT_THRESHOLDS (defined above)
+    to experiment with different soft gates. Hard blocks (drawdown tiers, loss streaks)
+    remain fixed.
+    """
     md = packet.get("market_data", {})
     port = packet.get("portfolio", {})
     config = thresholds or {}
@@ -35,7 +68,9 @@ def should_auto_hold(
     neutral_rsi_high = float(config.get("neutral_rsi_high", 60.0))
     neutral_rel_volume_max = float(config.get("neutral_rel_volume_max", 1.3))
     bullish_hold_rsi = float(config.get("bullish_hold_rsi", 62.0))
-    bearish_hold_rsi = float(config.get("bearish_hold_rsi", 38.0))
+    bearish_hold_rsi = float(config.get("bearish_hold_rsi", 20.0))
+    drawdown_caution_rsi = float(config.get("drawdown_caution_rsi", 35.0))
+    max_dd_warning = float(config.get("max_dd_warning", 6.0))
 
     rsi = float(md.get("rsi_14", 50.0))
     regime = str(md.get("market_regime", "Normal"))
@@ -52,7 +87,7 @@ def should_auto_hold(
             f"Restricted drawdown ({drawdown_pct:.1f}%) - HOLD or exit only, no new BUY positions"
         )
 
-    if drawdown_pct >= 5.0 and ("Bullish" not in trend_label or rsi > 35):
+    if drawdown_pct >= 5.0 and ("Bullish" not in trend_label or rsi > drawdown_caution_rsi):
         return True, f"Caution drawdown ({drawdown_pct:.1f}%) - not extreme oversold setup"
 
     if (
@@ -63,7 +98,7 @@ def should_auto_hold(
     ):
         return True, "Neutral RSI, Normal regime, low volume, no regime change"
 
-    if drawdown_pct >= 6.0:
+    if drawdown_pct >= max_dd_warning:
         return True, f"Drawdown at {drawdown_pct:.2f}% - approaching max drawdown limit"
 
     if "Bullish" in trend_label and rsi >= bullish_hold_rsi:
@@ -312,6 +347,8 @@ class MSFTDailyBacktestStrategy(Strategy):
             "neutral_rel_volume_max": float(self.neutral_rel_volume_max),
             "bullish_hold_rsi": float(self.bullish_hold_rsi),
             "bearish_hold_rsi": float(self.bearish_hold_rsi),
+            # drawdown_caution_rsi and max_dd_warning fall back to module defaults
+            # (DEFAULT_SOFT_THRESHOLDS) if not explicitly provided.
         }
         auto_hold, hold_reason = should_auto_hold(packet, thresholds=hold_thresholds)
         if auto_hold:

@@ -12,6 +12,9 @@
         <string>-i</string>
         <string>/Users/khemra/dev/crispy-sniffle/.msft/bin/python</string>
         <string>/Users/khemra/dev/crispy-sniffle/equity_msft/complete_daily_loop.py</string>
+        <string>--dry-run</string>
+        <string>--shadow-grok</string>
+        <string>--relax-gates</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -60,9 +63,6 @@
             <integer>15</integer>
         </dict>
     </array>
-
-    <key>ExitTimeOut</key>
-    <integer>60</integer>  <!-- or 120 if trades can take longer -->
 
     <key>RunAtLoad</key>
     <false/>

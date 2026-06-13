@@ -407,58 +407,115 @@ def get_loss_streak_multiplier(portfolio: Dict[str, Any]) -> float:
     else:
         return 1.0
 
-def should_auto_hold(packet: Dict[str, Any]) -> Tuple[bool, str]:
-    """Quick local check: if conditions strongly suggest HOLD, skip Grok call. Returns (bool, reason)."""
+def should_auto_hold(
+    packet: Dict[str, Any],
+    thresholds: Dict[str, float] | None = None,
+) -> Tuple[bool, str]:
+    """Quick local check: if conditions strongly suggest HOLD, skip Grok call.
+
+    thresholds (optional) lets you override the softer signal-based rules for
+    experimentation in shadow mode while keeping the hard drawdown/streak blocks fixed.
+    This matches the signature used in backtest_strategy.py for consistency.
+    """
     if packet is None:
         return False, "No packet provided"
 
     md = packet.get("market_data", {})
     port = packet.get("portfolio", {})
-    constr = packet.get("constraints", {})
+    config = thresholds or {}
 
-    rsi = md.get("rsi_14", 50.0)
-    regime = md.get("market_regime", "Normal")
-    rel_vol = md.get("relative_volume", 1.0)
-    drawdown_pct = port.get("current_drawdown_pct", 0.0)
-    trend_label = md.get("trend_label", "Neutral")
-    regime_changed = md.get("regime_changed_today", False)
+    rsi = float(md.get("rsi_14", 50.0))
+    regime = str(md.get("market_regime", "Normal"))
+    rel_vol = float(md.get("relative_volume", 1.0))
+    drawdown_pct = float(port.get("current_drawdown_pct", 0.0))
+    trend_label = str(md.get("trend_label", "Neutral"))
+    regime_changed = bool(md.get("regime_changed_today", False))
 
-    # NEW: Drawdown-based rules (highest priority) ---------------------------------------------
+    # Pull soft / tunable thresholds (hard drawdown blocks below stay non-configurable)
+    neutral_rsi_low = float(config.get("neutral_rsi_low", 40.0))
+    neutral_rsi_high = float(config.get("neutral_rsi_high", 60.0))
+    neutral_rel_volume_max = float(config.get("neutral_rel_volume_max", 1.3))
+    bullish_hold_rsi = float(config.get("bullish_hold_rsi", 62.0))
+    bearish_hold_rsi = float(config.get("bearish_hold_rsi", 20.0))
+    drawdown_caution_rsi = float(config.get("drawdown_caution_rsi", 35.0))
+    max_dd_warning = float(config.get("max_dd_warning", 6.0))
+
+    # =====================================================================
+    # HARD / OBJECTIVE BLOCKS (Point 1 in our tuning list)
+    # These should remain strong for minimal-overwatch safety.
+    # =====================================================================
     if drawdown_pct >= 10.0:
         return True, f"Emergency drawdown ({drawdown_pct:.1f}%) - all new risk blocked"
-    
+
     if drawdown_pct >= 8.0:
         return True, f"Restricted drawdown ({drawdown_pct:.1f}%) - HOLD or exit only, no new BUY positions"
-    
+
     if drawdown_pct >= 5.0:
-        # Caution level - still let Grok decide, but only allow entry on extreme setups 
-        if "Bullish" not in trend_label or rsi > 35: # not extreme oversold in uptrend 
+        # Caution level - still let Grok decide on truly extreme setups
+        if "Bullish" not in trend_label or rsi > drawdown_caution_rsi:
             return True, f"Caution drawdown ({drawdown_pct:.1f}%) - not extreme oversold setup"
 
-    # --- Regime and indicator-based rules (apply after drawdown is <5%) ------------------------
+    # =====================================================================
+    # SOFTER SIGNAL-BASED RULES (Point 2)
+    # These are the main ones we can relax to give the LLM (Point 3) more
+    # chances to make nuanced decisions while the hard blocks above stay in place.
+    # =====================================================================
 
-    # Rule 1: Neutral zone – most common auto-hold case
-    if (40 <= rsi <= 60 and
-        regime == "Normal" and
-        rel_vol <= 1.3 and
-        not regime_changed):
+    # Neutral zone – most common auto-hold case today
+    if (
+        neutral_rsi_low <= rsi <= neutral_rsi_high
+        and regime == "Normal"
+        and rel_vol <= neutral_rel_volume_max
+        and not regime_changed
+    ):
         return True, "Neutral RSI, Normal regime, low volume, no regime change"
 
-    # Rule 2: Drawdown protection – avoid adding risk
-    max_dd_warning = 6.0  # trigger early, before your 10% hard block
+    # Early drawdown warning (before the hard 8%/10% blocks)
     if drawdown_pct >= max_dd_warning:
         return True, f"Drawdown at {drawdown_pct:.2f}% - approaching max drawdown limit"
 
-    # Rule 3: Bullish but not oversold enough to justify buy
-    if "Bullish" in trend_label and rsi >= 62:  # not deep enough dip
-        return True, f"Bullish trend but RSI {rsi} not low enough for entry"
+    # Bullish but not oversold enough to justify buy
+    if "Bullish" in trend_label and rsi >= bullish_hold_rsi:
+        return True, f"Bullish trend but RSI {rsi:.1f} not low enough for entry"
 
-    # Rule 4: Bearish but not overbought enough for exit
-    if "Bearish" in trend_label and rsi <= 20.0:   # lowered from 22 → 20
+    # Bearish but not overbought enough for exit / mean-reversion consideration
+    if "Bearish" in trend_label and rsi <= bearish_hold_rsi:
         return True, f"Bearish trend but RSI {rsi:.1f} not high enough for exit"
 
-    # Add more rules as you observe dry-runs (e.g. ATR too low/high)
+    # Add more rules as you observe dry-runs
     return False, "No auto-hold rule triggered"
+
+
+# =====================================================================
+# Tunable soft gate thresholds (for Point 2 / Point 3 experimentation)
+# =====================================================================
+
+# Current conservative defaults (preserve existing behavior)
+DEFAULT_SOFT_THRESHOLDS = {
+    "neutral_rsi_low": 40.0,
+    "neutral_rsi_high": 60.0,
+    "neutral_rel_volume_max": 1.3,
+    "bullish_hold_rsi": 62.0,
+    "bearish_hold_rsi": 20.0,
+    "drawdown_caution_rsi": 35.0,
+    "max_dd_warning": 6.0,
+}
+
+# A "relaxed but still conservative" set you can use while testing in
+# --dry-run --shadow-grok mode. These changes mainly increase how often
+# the deterministic layer says "GROK_DECIDED" (instead of auto-HOLD),
+# giving the LLM more opportunities to make nuanced decisions (Point 3)
+# while the hard drawdown / loss-streak / ATR / position-size blocks (Point 1)
+# remain fully in effect.
+RELAXED_SOFT_THRESHOLDS = {
+    "neutral_rsi_low": 38.0,
+    "neutral_rsi_high": 62.0,
+    "neutral_rel_volume_max": 1.6,   # allow a bit more volume before auto-holding
+    "bullish_hold_rsi": 57.0,        # allow milder pullbacks in uptrends
+    "bearish_hold_rsi": 28.0,        # biggest lever: lets Grok see more oversold (but not insane) setups in bearish trends
+    "drawdown_caution_rsi": 40.0,
+    "max_dd_warning": 6.0,
+}
 
 def fetch_msft_daily() -> Optional[Dict[str, Any]]:
     """Fetch MSFT market data and build trading packet with current portfolio state"""
@@ -706,22 +763,22 @@ Allowed actions: BUY, SELL, HOLD
 HARD BLOCKS (override all else):
 - drawdown_level >= 2 → HOLD or SELL only (never BUY)
 - loss_streak_multiplier <= 0.0 or consecutive_loss_streak >= max_consecutive_losses → HOLD or SELL only
-- drawdown_level == 1 → BUY only if RSI < 22 AND "Bullish" in trend_label AND suggested_position_size >= 1
+- drawdown_level == 1 → BUY only if RSI < 25 AND "Bullish" in trend_label AND suggested_position_size >= 1
 
 Core rules:
 - Respect suggested_position_size (already regime- & drawdown-adjusted) — never suggest larger.
 - Only BUY if suggested_position_size >= 1.
-- Prioritize trend_label over short-term RSI unless RSI is extreme (<22 or >88).
+- The local deterministic gates have been intentionally relaxed to give you more opportunity for judgment. Use that room, but still be disciplined: prioritize trend_label over short-term RSI unless the setup is clearly strong or RSI is extreme (roughly <28 oversold or >85 overbought).
 - Strongly prefer BUY in "Bullish" (or price_above_200_sma=True) + low/oversold RSI.
-- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless extreme oversold (RSI < 22) + Bullish.
+- In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless there is a clear extreme oversold setup (RSI < 25) + Bullish.
 - If regime_days_in_state >= 18 and "Volatility" in market_regime → prefer reduced size (soft damper active).
 - If regime_changed_today → extra caution on new entries.
 - SELL on RSI >= 88 (overbought) regardless of trend.
 - For SELL with profit: approximate tiers (<7% full, 7-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
-- Extreme oversold (RSI < 22) can still justify a BUY even in a Bearish trend if drawdown is low (<2%) and suggested_position_size is valid.
+- Extreme oversold (RSI < 25-28 range) can still justify a BUY even in a Bearish trend if drawdown is low (<2%) and suggested_position_size is valid.
 
 In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic
-(e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=8.8 in Bearish trend").
+(e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=12 in Bearish trend with low drawdown").
 
 Output format (exact, nothing else):
 ACTION: <BUY or SELL or HOLD>
@@ -1335,8 +1392,23 @@ def send_email_summary(
         logger.error(f"Failed to send summary email: {e}")
 
 
-def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: bool = False):
-    """Main trading loop with comprehensive error handling and logging"""
+def main(
+    dry_run: bool = False,
+    ignore_market_check: bool = False,
+    shadow_mode: bool = False,
+    auto_hold_thresholds: Dict[str, float] | None = None,
+    relaxed_gates: bool = False,
+):
+    """Main trading loop with comprehensive error handling and logging
+
+    auto_hold_thresholds: optional dict to override the softer signal-based
+    rules in should_auto_hold (see RELAXED_SOFT_THRESHOLDS / DEFAULT_SOFT_THRESHOLDS).
+    Hard safety blocks (drawdown tiers, loss streaks, ATR, position sizing) are never overridden here.
+
+    relaxed_gates: when True, the shadow log will be written to a separate file
+    (shadow_grok_log_relaxed.jsonl) so historical data with different gate settings
+    stays clean for analysis.
+    """
     packet = None
     action = None
     reason = None
@@ -1346,6 +1418,17 @@ def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: 
     logger.info("=== Starting Daily Trading Loop ===")
     if dry_run:
         logger.info("DRY-RUN MODE ENABLED: No orders will be placed and no state files will be modified.")
+
+    # Clear banner for automated launchd shadow collection (very useful when running via plist)
+    if dry_run and shadow_mode:
+        if relaxed_gates:
+            logger.info("*** LAUNCHD AUTOMATED RELAXED SHADOW DATA COLLECTION MODE ***")
+            logger.info("    Using RELAXED_SOFT_THRESHOLDS. Logging decisions to shadow_grok_log_relaxed.jsonl")
+            logger.info("    Hard safety blocks (drawdown tiers, loss streaks, ATR guards, max position size) remain fully active.")
+            logger.info("    This run is purely for data collection and evaluation — no trades will execute.")
+        else:
+            logger.info("*** LAUNCHD AUTOMATED SHADOW MODE ***")
+            logger.info("    Using DEFAULT thresholds. Logging to shadow_grok_log.jsonl")
     # Check if market is open (basic weekend check)
     if not ignore_market_check and not is_market_open():
         logger.warning("Market is closed (weekend/holiday). Exiting.")
@@ -1381,7 +1464,7 @@ def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: 
             action = "SKIPPED"
             return
         # Check local deterministic filters before calling Grok
-        auto_hold, reason = should_auto_hold(packet)
+        auto_hold, reason = should_auto_hold(packet, thresholds=auto_hold_thresholds)
         if auto_hold and not shadow_mode:
             logger.info(f"AUTO-HOLD (local filter): {reason} | RSI={packet['market_data']['rsi_14']:.1f}, Regime={packet['market_data']['market_regime']}, Rel Vol={packet['market_data']['relative_volume']:.2f}")
             price = packet["market_data"]["price"]
@@ -1449,12 +1532,16 @@ def main(dry_run: bool = False, ignore_market_check: bool = False, shadow_mode: 
                     "current_drawdown_pct": packet["portfolio"].get("current_drawdown_pct"),
                 }
             }
-            shadow_log_path = BASE_DIR / "shadow_grok_log.jsonl"
+            if relaxed_gates:
+                shadow_log_path = BASE_DIR / "shadow_grok_log_relaxed.jsonl"
+            else:
+                shadow_log_path = BASE_DIR / "shadow_grok_log.jsonl"
             with open(shadow_log_path, "a") as f:
                 f.write(json.dumps(log_entry) + "\n")
             action = grok_action if grok_success else "HOLD"
             reason = grok_reason if grok_success else "Grok unavailable - default HOLD"
-            logger.info(f"SHADOW-MODE: Grok says {action} — {reason} (no execution)")
+            log_name = shadow_log_path.name
+            logger.info(f"SHADOW-MODE: Grok says {action} — {reason} (no execution) [logged to {log_name}]")
             return  # shadow mode: log only, no execution
 
         # Normal mode: use Grok result for execution
@@ -1524,8 +1611,18 @@ if __name__ == "__main__":
     action="store_true",
     help="Enable live trading with reduced risk (e.g. 10% of normal size). Use with --shadow-grok for monitoring."
     )
+    parser.add_argument(
+        "--relax-gates",
+        action="store_true",
+        help="Use RELAXED_SOFT_THRESHOLDS (wider neutral band, higher bearish RSI cutoff, etc.). "
+             "Only affects --dry-run --shadow-grok (or --live-small). "
+             "Hard drawdown/loss-streak/ATR/position-size blocks are never relaxed. "
+             "Use together with the new shadow_replay.py to measure impact on activity and hypothetical P&L."
+    )
     args = parser.parse_args()
-    shadow_mode = args.shadow_grok and args.dry_run or args.live_small # only active in dry-run
+    shadow_mode = args.shadow_grok and args.dry_run or args.live_small  # only active in dry-run
+    use_relaxed_gates = bool(args.relax_gates and (args.dry_run or args.live_small))
+    auto_hold_thresholds = RELAXED_SOFT_THRESHOLDS if use_relaxed_gates else None
     
     BASE_DIR = Path(__file__).resolve().parent
     TEST_DIR = BASE_DIR / "test_runs"
@@ -1552,4 +1649,13 @@ if __name__ == "__main__":
         f"{'DRY-RUN' if args.dry_run else 'LIVE'}: Logging to {LOG_FILE}"
     )
 
-    main(dry_run=args.dry_run, ignore_market_check=args.ignore_market_check, shadow_mode=shadow_mode)
+    if use_relaxed_gates:
+        logger.info("Using RELAXED_SOFT_THRESHOLDS for should_auto_hold (hard safety blocks unchanged)")
+
+    main(
+        dry_run=args.dry_run,
+        ignore_market_check=args.ignore_market_check,
+        shadow_mode=shadow_mode,
+        auto_hold_thresholds=auto_hold_thresholds,
+        relaxed_gates=use_relaxed_gates,
+    )

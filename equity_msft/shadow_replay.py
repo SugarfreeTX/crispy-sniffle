@@ -2,7 +2,10 @@
 """
 Shadow Grok Decision Replay Simulator
 
-Replays the decisions recorded in shadow_grok_log.jsonl (Grok LLM actions vs.
+This is the primary tool supporting "Point 4: Keep using shadow + the replay
+simulator as your tuning lab."
+
+Replays the decisions recorded in a shadow_grok_log (Grok LLM actions vs.
 the deterministic auto-hold / rule-based gates) against the actual prices and
 suggested_position_sizes observed during those runs.
 
