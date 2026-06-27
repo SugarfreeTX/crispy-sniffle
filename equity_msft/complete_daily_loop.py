@@ -789,7 +789,7 @@ Data packet:
 """
 
     body = {
-        "model": "grok-4-1-fast-reasoning-latest",
+        "model": "grok-4.3",
         "messages": [
             {"role": "user", "content": prompt}
         ]
