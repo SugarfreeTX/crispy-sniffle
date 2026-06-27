@@ -6,7 +6,7 @@ import json
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import pandas as pd
 from dotenv import load_dotenv
 load_dotenv()
@@ -71,6 +71,8 @@ MIN_MODEL_CONFIDENCE = _env_float("MIN_MODEL_CONFIDENCE", 0.55)
 SHADOW_MODE = _env_bool("SHADOW_MODE", False)
 SHADOW_LOG_JSONL = os.getenv("SHADOW_LOG_JSONL", str(BASE_DIR / "shadow_calibration_log.jsonl"))
 SHADOW_LOG_CSV = os.getenv("SHADOW_LOG_CSV", str(BASE_DIR / "shadow_calibration_log.csv"))
+KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2")
+KALSHI_BACKFILL_SLEEP_SEC = _env_float("KALSHI_BACKFILL_SLEEP_SEC", 0.1)
 LOG_FILE = os.getenv("LOG_FILE", "pred_market_bot.log")
 
 SHADOW_CSV_FIELDS = [
@@ -217,6 +219,210 @@ def log_shadow_calibration(
     with csv_path.open("a", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=SHADOW_CSV_FIELDS)
         writer.writerow(entry)
+
+
+def _normalize_realized_outcome(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "null", "none", "na", "n/a"}:
+            return None
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def load_shadow_calibration_log(jsonl_path: Optional[str] = None) -> list[dict]:
+    """Load shadow calibration rows from JSONL."""
+    path = Path(jsonl_path or SHADOW_LOG_JSONL)
+    if not path.exists():
+        return []
+
+    rows: list[dict] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                logging.warning("Skipping malformed JSONL row %s:%s (%s)", path, line_no, exc)
+                continue
+            row["realized_outcome"] = _normalize_realized_outcome(row.get("realized_outcome"))
+            rows.append(row)
+    return rows
+
+
+def _write_shadow_calibration_jsonl(rows: list[dict], jsonl_path: Path) -> None:
+    lines = [json.dumps(row, ensure_ascii=True) for row in rows]
+    content = "\n".join(lines)
+    if lines:
+        content += "\n"
+
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = jsonl_path.with_suffix(jsonl_path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(jsonl_path)
+
+
+def _write_shadow_calibration_csv(rows: list[dict], csv_path: Path) -> None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
+    with tmp_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SHADOW_CSV_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in SHADOW_CSV_FIELDS})
+    tmp_path.replace(csv_path)
+
+
+def _parse_kalshi_market_result(market_payload: dict) -> Optional[bool]:
+    result = str(market_payload.get("result", "")).strip().lower()
+    if result == "yes":
+        return True
+    if result == "no":
+        return False
+    return None
+
+
+def fetch_kalshi_market(ticker: str, client: Any = None) -> Optional[dict]:
+    """Fetch one Kalshi market payload by ticker."""
+    if client is not None:
+        try:
+            if hasattr(client, "get_market"):
+                response = client.get_market(ticker)
+            elif hasattr(client, "markets_api") and hasattr(client.markets_api, "get_market"):
+                response = client.markets_api.get_market(ticker)
+            else:
+                response = None
+
+            if response is not None:
+                if hasattr(response, "market"):
+                    market = response.market
+                    if hasattr(market, "to_dict"):
+                        return market.to_dict()
+                    if hasattr(market, "model_dump"):
+                        return market.model_dump()
+                    if isinstance(market, dict):
+                        return market
+                if isinstance(response, dict):
+                    return response.get("market", response)
+        except Exception as exc:
+            logging.warning("Kalshi client lookup failed for %s (%s); falling back to HTTP.", ticker, exc)
+
+    url = f"{KALSHI_API_BASE.rstrip('/')}/markets/{ticker}"
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 404:
+            logging.warning("Kalshi market not found: %s", ticker)
+            return None
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload.get("market", payload)
+    except Exception as exc:
+        logging.warning("Kalshi HTTP lookup failed for %s: %s", ticker, exc)
+        return None
+
+
+def backfill_shadow_realized_outcomes(
+    *,
+    client: Any = None,
+    jsonl_path: Optional[str] = None,
+    csv_path: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """
+    Backfill realized_outcome for shadow rows whose markets have settled on Kalshi.
+
+    realized_outcome is True when the market settled YES, False when it settled NO,
+    and remains null while the market is still open or undetermined.
+    """
+    jsonl_file = Path(jsonl_path or SHADOW_LOG_JSONL)
+    csv_file = Path(csv_path or SHADOW_LOG_CSV)
+    rows = load_shadow_calibration_log(str(jsonl_file))
+    if not rows:
+        logging.info("No shadow calibration rows found at %s", jsonl_file)
+        return {
+            "rows_total": 0,
+            "rows_pending": 0,
+            "rows_updated": 0,
+            "tickers_checked": 0,
+            "tickers_settled": 0,
+            "tickers_unsettled": 0,
+            "tickers_missing": 0,
+        }
+
+    pending_rows = [row for row in rows if row.get("realized_outcome") is None]
+    pending_tickers = sorted({str(row.get("ticker", "")).strip() for row in pending_rows if row.get("ticker")})
+
+    outcome_by_ticker: dict[str, Optional[bool]] = {}
+    tickers_settled = 0
+    tickers_unsettled = 0
+    tickers_missing = 0
+
+    for ticker in pending_tickers:
+        market_payload = fetch_kalshi_market(ticker, client=client)
+        if market_payload is None:
+            outcome_by_ticker[ticker] = None
+            tickers_missing += 1
+            continue
+
+        realized = _parse_kalshi_market_result(market_payload)
+        outcome_by_ticker[ticker] = realized
+        if realized is None:
+            tickers_unsettled += 1
+        else:
+            tickers_settled += 1
+
+        if KALSHI_BACKFILL_SLEEP_SEC > 0:
+            time.sleep(KALSHI_BACKFILL_SLEEP_SEC)
+
+    rows_updated = 0
+    for row in rows:
+        if row.get("realized_outcome") is not None:
+            continue
+        ticker = str(row.get("ticker", "")).strip()
+        realized = outcome_by_ticker.get(ticker)
+        if realized is None:
+            continue
+        row["realized_outcome"] = realized
+        rows_updated += 1
+
+    if rows_updated and not dry_run:
+        _write_shadow_calibration_jsonl(rows, jsonl_file)
+        _write_shadow_calibration_csv(rows, csv_file)
+        logging.info(
+            "Backfilled %s shadow rows across %s settled tickers (%s, %s).",
+            rows_updated,
+            tickers_settled,
+            jsonl_file,
+            csv_file,
+        )
+    elif rows_updated:
+        logging.info(
+            "Dry run: would backfill %s shadow rows across %s settled tickers.",
+            rows_updated,
+            tickers_settled,
+        )
+    else:
+        logging.info("No settled outcomes available yet for pending shadow rows.")
+
+    return {
+        "rows_total": len(rows),
+        "rows_pending": len(pending_rows),
+        "rows_updated": rows_updated,
+        "tickers_checked": len(pending_tickers),
+        "tickers_settled": tickers_settled,
+        "tickers_unsettled": tickers_unsettled,
+        "tickers_missing": tickers_missing,
+    }
+
 
 def calculate_position_size(edge: float, bankroll: float, grok_confidence: float = 0.7) -> int:
     """Fractional Kelly position sizing with safety caps. 
@@ -373,5 +579,27 @@ def main_loop():
         
         time.sleep(300)  # Poll interval
 
+def _parse_cli():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Kalshi prediction market bot")
+    parser.add_argument(
+        "--backfill-outcomes",
+        action="store_true",
+        help="Backfill realized_outcome in shadow calibration logs from settled Kalshi markets.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --backfill-outcomes, report updates without writing log files.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main_loop()
+    args = _parse_cli()
+    if args.backfill_outcomes:
+        stats = backfill_shadow_realized_outcomes(dry_run=args.dry_run)
+        print(json.dumps(stats, indent=2))
+    else:
+        main_loop()
