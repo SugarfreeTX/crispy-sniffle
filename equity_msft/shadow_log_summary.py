@@ -1,7 +1,7 @@
 import json 
 overrides = 0 
 total = 0 
-with open("shadow_grok_log.jsonl") as f:
+with open("shadow_grok_log_relaxed.jsonl") as f:
     for line in f: 
         entry = json.loads(line)
         if entry["deterministic_action"] != entry["grok_action"]:

@@ -1,0 +1,4 @@
+step,date,action,qty,price,realized_pnl,equity_after,reason
+3,2026-06-18,BUY,52,379.4,0.0,99961.94,Overrides likely HOLD (Bearish trend) due to extreme oversold RSI=18.6 + low drawdown + valid size.
+4,2026-06-22,BUY,2,367.34,0.0,99334.82,Overrides Bearish trend logic due to extreme RSI=9.3 oversold + low drawdown + valid size.
+7,2026-06-25,BUY,1,352.83,0.0,98551.28,Overrides Bearish trend due to extreme RSI=15.3 oversold + valid size/low drawdown.
