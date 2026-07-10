@@ -436,9 +436,13 @@ def should_auto_hold(
     neutral_rsi_high = float(config.get("neutral_rsi_high", 60.0))
     neutral_rel_volume_max = float(config.get("neutral_rel_volume_max", 1.3))
     bullish_hold_rsi = float(config.get("bullish_hold_rsi", 62.0))
-    bearish_hold_rsi = float(config.get("bearish_hold_rsi", 20.0))
+    # Dual bearish gates: entry ceiling (flat) vs exit floor (long). See DEFAULT_SOFT_THRESHOLDS.
+    bearish_entry_rsi = float(config.get("bearish_entry_rsi", 20.0))
+    bearish_exit_rsi = float(config.get("bearish_exit_rsi", 52.0))
     drawdown_caution_rsi = float(config.get("drawdown_caution_rsi", 35.0))
     max_dd_warning = float(config.get("max_dd_warning", 6.0))
+
+    shares = int(port.get("shares", 0) or 0)
 
     # =====================================================================
     # HARD / OBJECTIVE BLOCKS (Point 1 in our tuning list)
@@ -478,9 +482,23 @@ def should_auto_hold(
     if "Bullish" in trend_label and rsi >= bullish_hold_rsi:
         return True, f"Bullish trend but RSI {rsi:.1f} not low enough for entry"
 
-    # Bearish but not overbought enough for exit / mean-reversion consideration
-    if "Bearish" in trend_label and rsi <= bearish_hold_rsi:
-        return True, f"Bearish trend but RSI {rsi:.1f} not high enough for exit"
+    # Bearish dual gates (position-aware):
+    # - Flat: auto-HOLD unless RSI is extreme enough for mean-reversion entry consideration
+    # - Long: auto-HOLD unless RSI has recovered enough for exit/trim consideration
+    # Middle band (entry < RSI < exit) stays quiet either way.
+    if "Bearish" in trend_label:
+        if shares <= 0:
+            if rsi > bearish_entry_rsi:
+                return True, (
+                    f"Bearish trend, flat, RSI {rsi:.1f} not oversold enough for entry "
+                    f"(need <= {bearish_entry_rsi:.0f})"
+                )
+        else:
+            if rsi < bearish_exit_rsi:
+                return True, (
+                    f"Bearish trend, long, RSI {rsi:.1f} not recovered enough for exit "
+                    f"(need >= {bearish_exit_rsi:.0f})"
+                )
 
     # Add more rules as you observe dry-runs
     return False, "No auto-hold rule triggered"
@@ -490,13 +508,16 @@ def should_auto_hold(
 # Tunable soft gate thresholds (for Point 2 / Point 3 experimentation)
 # =====================================================================
 
-# Current conservative defaults (preserve existing behavior)
+# Current conservative defaults
 DEFAULT_SOFT_THRESHOLDS = {
     "neutral_rsi_low": 40.0,
     "neutral_rsi_high": 60.0,
     "neutral_rel_volume_max": 1.3,
     "bullish_hold_rsi": 62.0,
-    "bearish_hold_rsi": 20.0,
+    # Flat + Bearish: only invite Grok when RSI <= this (mean-reversion ceiling)
+    "bearish_entry_rsi": 20.0,
+    # Long + Bearish: only invite Grok when RSI >= this (exit/trim floor)
+    "bearish_exit_rsi": 52.0,
     "drawdown_caution_rsi": 35.0,
     "max_dd_warning": 6.0,
 }
@@ -512,7 +533,8 @@ RELAXED_SOFT_THRESHOLDS = {
     "neutral_rsi_high": 62.0,
     "neutral_rel_volume_max": 1.6,   # allow a bit more volume before auto-holding
     "bullish_hold_rsi": 57.0,        # allow milder pullbacks in uptrends
-    "bearish_hold_rsi": 28.0,        # biggest lever: lets Grok see more oversold (but not insane) setups in bearish trends
+    "bearish_entry_rsi": 28.0,       # wider mean-reversion entry window for Grok
+    "bearish_exit_rsi": 45.0,        # earlier exit/trim consideration while long
     "drawdown_caution_rsi": 40.0,
     "max_dd_warning": 6.0,
 }
@@ -1614,10 +1636,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--relax-gates",
         action="store_true",
-        help="Use RELAXED_SOFT_THRESHOLDS (wider neutral band, higher bearish RSI cutoff, etc.). "
+        help="Use RELAXED_SOFT_THRESHOLDS (wider neutral band, wider bearish entry RSI ceiling, "
+             "lower bearish exit RSI floor, etc.). "
              "Only affects --dry-run --shadow-grok (or --live-small). "
              "Hard drawdown/loss-streak/ATR/position-size blocks are never relaxed. "
-             "Use together with the new shadow_replay.py to measure impact on activity and hypothetical P&L."
+             "Use together with shadow_replay.py to measure impact on activity and hypothetical P&L."
     )
     args = parser.parse_args()
     shadow_mode = args.shadow_grok and args.dry_run or args.live_small  # only active in dry-run

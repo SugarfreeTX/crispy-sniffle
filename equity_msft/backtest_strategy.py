@@ -26,13 +26,14 @@ logger = logging.getLogger(__name__)
 # Tunable soft gate thresholds (kept in sync with complete_daily_loop.py)
 # =====================================================================
 
-# Current conservative defaults (preserve existing behavior for backtests)
+# Current conservative defaults (keep in sync with complete_daily_loop.py)
 DEFAULT_SOFT_THRESHOLDS = {
     "neutral_rsi_low": 40.0,
     "neutral_rsi_high": 60.0,
     "neutral_rel_volume_max": 1.3,
     "bullish_hold_rsi": 62.0,
-    "bearish_hold_rsi": 20.0,
+    "bearish_entry_rsi": 20.0,
+    "bearish_exit_rsi": 52.0,
     "drawdown_caution_rsi": 35.0,
     "max_dd_warning": 6.0,
 }
@@ -44,7 +45,8 @@ RELAXED_SOFT_THRESHOLDS = {
     "neutral_rsi_high": 62.0,
     "neutral_rel_volume_max": 1.6,
     "bullish_hold_rsi": 57.0,
-    "bearish_hold_rsi": 28.0,
+    "bearish_entry_rsi": 28.0,
+    "bearish_exit_rsi": 45.0,
     "drawdown_caution_rsi": 40.0,
     "max_dd_warning": 6.0,
 }
@@ -59,6 +61,10 @@ def should_auto_hold(
     Pass DEFAULT_SOFT_THRESHOLDS or RELAXED_SOFT_THRESHOLDS (defined above)
     to experiment with different soft gates. Hard blocks (drawdown tiers, loss streaks)
     remain fixed.
+
+    Bearish soft gates are position-aware:
+      - flat: auto-HOLD unless RSI <= bearish_entry_rsi (mean-reversion window)
+      - long: auto-HOLD unless RSI >= bearish_exit_rsi (exit/trim window)
     """
     md = packet.get("market_data", {})
     port = packet.get("portfolio", {})
@@ -68,7 +74,8 @@ def should_auto_hold(
     neutral_rsi_high = float(config.get("neutral_rsi_high", 60.0))
     neutral_rel_volume_max = float(config.get("neutral_rel_volume_max", 1.3))
     bullish_hold_rsi = float(config.get("bullish_hold_rsi", 62.0))
-    bearish_hold_rsi = float(config.get("bearish_hold_rsi", 20.0))
+    bearish_entry_rsi = float(config.get("bearish_entry_rsi", 20.0))
+    bearish_exit_rsi = float(config.get("bearish_exit_rsi", 52.0))
     drawdown_caution_rsi = float(config.get("drawdown_caution_rsi", 35.0))
     max_dd_warning = float(config.get("max_dd_warning", 6.0))
 
@@ -78,6 +85,7 @@ def should_auto_hold(
     drawdown_pct = float(port.get("current_drawdown_pct", 0.0))
     trend_label = str(md.get("trend_label", "Neutral"))
     regime_changed = bool(md.get("regime_changed_today", False))
+    shares = int(port.get("shares", 0) or 0)
 
     if drawdown_pct >= 10.0:
         return True, f"Emergency drawdown ({drawdown_pct:.1f}%) - all new risk blocked"
@@ -104,8 +112,19 @@ def should_auto_hold(
     if "Bullish" in trend_label and rsi >= bullish_hold_rsi:
         return True, f"Bullish trend but RSI {rsi:.1f} not low enough for entry"
 
-    if "Bearish" in trend_label and rsi <= bearish_hold_rsi:
-        return True, f"Bearish trend but RSI {rsi:.1f} not high enough for exit"
+    if "Bearish" in trend_label:
+        if shares <= 0:
+            if rsi > bearish_entry_rsi:
+                return True, (
+                    f"Bearish trend, flat, RSI {rsi:.1f} not oversold enough for entry "
+                    f"(need <= {bearish_entry_rsi:.0f})"
+                )
+        else:
+            if rsi < bearish_exit_rsi:
+                return True, (
+                    f"Bearish trend, long, RSI {rsi:.1f} not recovered enough for exit "
+                    f"(need >= {bearish_exit_rsi:.0f})"
+                )
 
     return False, "No auto-hold rule triggered"
 
@@ -143,7 +162,8 @@ class MSFTDailyBacktestStrategy(Strategy):
     neutral_rsi_high = 60.0
     neutral_rel_volume_max = 1.3
     bullish_hold_rsi = 62.0
-    bearish_hold_rsi = 38.0
+    bearish_entry_rsi = 28.0  # flat+bearish: only consider entries when RSI <= this
+    bearish_exit_rsi = 52.0   # long+bearish: only consider exits when RSI >= this
     buy_pullback_rsi = 46.0
     sell_bearish_rsi = 52.0
     sell_overbought_rsi = 88.0    # raised 74→88; take_profit_pnl_pct is the primary exit
@@ -346,7 +366,8 @@ class MSFTDailyBacktestStrategy(Strategy):
             "neutral_rsi_high": float(self.neutral_rsi_high),
             "neutral_rel_volume_max": float(self.neutral_rel_volume_max),
             "bullish_hold_rsi": float(self.bullish_hold_rsi),
-            "bearish_hold_rsi": float(self.bearish_hold_rsi),
+            "bearish_entry_rsi": float(self.bearish_entry_rsi),
+            "bearish_exit_rsi": float(self.bearish_exit_rsi),
             # drawdown_caution_rsi and max_dd_warning fall back to module defaults
             # (DEFAULT_SOFT_THRESHOLDS) if not explicitly provided.
         }

@@ -49,7 +49,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--neutral-rsi-high", type=float, default=60.0, help="Neutral-zone upper RSI bound for auto-HOLD")
     parser.add_argument("--neutral-rel-volume-max", type=float, default=1.3, help="Max relative volume for neutral auto-HOLD")
     parser.add_argument("--bullish-hold-rsi", type=float, default=62.0, help="Auto-HOLD in bullish trend above this RSI")
-    parser.add_argument("--bearish-hold-rsi", type=float, default=38.0, help="Auto-HOLD in bearish trend below this RSI")
+    parser.add_argument(
+        "--bearish-entry-rsi",
+        type=float,
+        default=28.0,
+        help="Flat+bearish: auto-HOLD unless RSI <= this (mean-reversion entry ceiling)",
+    )
+    parser.add_argument(
+        "--bearish-exit-rsi",
+        type=float,
+        default=52.0,
+        help="Long+bearish: auto-HOLD unless RSI >= this (exit/trim floor)",
+    )
     parser.add_argument("--buy-pullback-rsi", type=float, default=46.0, help="BUY pullback trigger RSI cap in bullish trend")
     parser.add_argument("--sell-bearish-rsi", type=float, default=52.0, help="SELL trigger RSI floor in bearish trend")
     parser.add_argument("--sell-overbought-rsi", type=float, default=88.0, help="SELL trigger RSI floor for overbought exits")
@@ -100,6 +111,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-atr cannot be greater than --max-atr")
     if args.neutral_rsi_low >= args.neutral_rsi_high:
         raise ValueError("--neutral-rsi-low must be less than --neutral-rsi-high")
+    if args.bearish_entry_rsi > args.bearish_exit_rsi:
+        raise ValueError("--bearish-entry-rsi should be <= --bearish-exit-rsi")
     if args.sweep_max_runs < 1:
         raise ValueError("--sweep-max-runs must be at least 1")
     if args.sweep_top_n < 1:
@@ -122,7 +135,8 @@ def build_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
         "neutral_rsi_high": args.neutral_rsi_high,
         "neutral_rel_volume_max": args.neutral_rel_volume_max,
         "bullish_hold_rsi": args.bullish_hold_rsi,
-        "bearish_hold_rsi": args.bearish_hold_rsi,
+        "bearish_entry_rsi": args.bearish_entry_rsi,
+        "bearish_exit_rsi": args.bearish_exit_rsi,
         "buy_pullback_rsi": args.buy_pullback_rsi,
         "sell_bearish_rsi": args.sell_bearish_rsi,
         "sell_overbought_rsi": args.sell_overbought_rsi,

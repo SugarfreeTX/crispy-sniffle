@@ -2,16 +2,16 @@
   "grok": {
     "policy": "grok",
     "initial_cash": 99961.94,
-    "final_equity": 100416.33,
+    "final_equity": 100285.43,
     "peak_equity": 100622.58,
-    "return_pct": 0.4546,
-    "max_drawdown_pct": 0.0,
+    "return_pct": 0.3236,
+    "max_drawdown_pct": 1.4112,
     "trade_count": 3,
     "buy_count": 3,
     "sell_count": 0,
     "win_rate_pct": 0.0,
     "profit_factor": 0.0,
-    "sharpe_ratio": 0.2657,
+    "sharpe_ratio": 0.1887,
     "closed_pnl_count": 0,
     "gross_wins": 0,
     "gross_losses": 0
@@ -34,9 +34,9 @@
     "gross_losses": 0
   },
   "delta": {
-    "return_pct_grok_minus_det": 0.4546,
-    "max_dd_grok_minus_det": 0.0,
+    "return_pct_grok_minus_det": 0.3236,
+    "max_dd_grok_minus_det": 1.4112,
     "trade_count_diff": 3,
-    "notes": "Positive delta_return means Grok policy outperformed on total return in this replay window."
+    "notes": "Positive delta_return means Grok outperformed on total return. Positive max_dd_grok_minus_det means Grok had a deeper max drawdown (drawdown is stored as a non-negative peak-to-trough %)."
   }
 }

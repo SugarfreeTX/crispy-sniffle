@@ -481,7 +481,9 @@ class ReplaySim:
         else:
             final_eq = curve[-1]["equity"]
             peak = max(p["equity"] for p in curve)
-            mdd = min(p["drawdown_pct"] for p in curve)
+            # drawdown_pct is stored as a non-negative peak-to-trough % (0 = at peak).
+            # Max drawdown is the worst (largest) value along the curve, not the min.
+            mdd = max(p["drawdown_pct"] for p in curve)
 
         trades = self.state.trades
         buy_trades = [t for t in trades if t["action"] == "BUY"]
@@ -630,7 +632,8 @@ def write_stats_txt(path: Path, metrics: Dict[str, Any], title: str):
 
 def write_comparison(path: Path, m_grok: Dict, m_det: Dict):
     delta_return = m_grok["return_pct"] - m_det["return_pct"]
-    delta_dd = m_grok["max_drawdown_pct"] - m_det["max_drawdown_pct"]  # less negative is better
+    # max_drawdown_pct is non-negative; positive delta_dd means Grok had a worse (deeper) DD.
+    delta_dd = m_grok["max_drawdown_pct"] - m_det["max_drawdown_pct"]
     data = {
         "grok": m_grok,
         "det": m_det,
@@ -638,7 +641,11 @@ def write_comparison(path: Path, m_grok: Dict, m_det: Dict):
             "return_pct_grok_minus_det": round(delta_return, 4),
             "max_dd_grok_minus_det": round(delta_dd, 4),
             "trade_count_diff": m_grok["trade_count"] - m_det["trade_count"],
-            "notes": "Positive delta_return means Grok policy outperformed on total return in this replay window.",
+            "notes": (
+                "Positive delta_return means Grok outperformed on total return. "
+                "Positive max_dd_grok_minus_det means Grok had a deeper max drawdown "
+                "(drawdown is stored as a non-negative peak-to-trough %)."
+            ),
         },
     }
     with open(path, "w") as f:
