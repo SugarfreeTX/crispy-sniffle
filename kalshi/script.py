@@ -1,12 +1,15 @@
 import csv
+import asyncio
 import os
 import time
 import logging
 import json
+import importlib
+import inspect
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Coroutine, Optional, cast
 import pandas as pd
 from dotenv import load_dotenv
 load_dotenv()
@@ -37,7 +40,9 @@ from kalshi_python_async.api.market_api import MarketApi
 BASE_DIR = Path(__file__).resolve().parent
 
 KALSHI_API_KEY = os.getenv("KALSHI_API_KEY")
-# ... other creds
+KALSHI_KEY_ID = os.getenv("KALSHI_KEY_ID")
+KALSHI_PRIVATE_KEY = os.getenv("KALSHI_PRIVATE_KEY")
+KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH")
 GROK_API_KEY = os.getenv("GROK_API_KEY")  # or xAI client
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-4.20-multi-agent-0309")
 
@@ -72,6 +77,9 @@ SHADOW_MODE = _env_bool("SHADOW_MODE", False)
 SHADOW_LOG_JSONL = os.getenv("SHADOW_LOG_JSONL", str(BASE_DIR / "shadow_calibration_log.jsonl"))
 SHADOW_LOG_CSV = os.getenv("SHADOW_LOG_CSV", str(BASE_DIR / "shadow_calibration_log.csv"))
 KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2")
+KALSHI_HOST = os.getenv("KALSHI_HOST", KALSHI_API_BASE)
+KALSHI_MIN_VOLUME = _env_float("KALSHI_MIN_VOLUME", 10000)
+KALSHI_MIN_DAYS_TO_CLOSE = _env_float("KALSHI_MIN_DAYS_TO_CLOSE", 2.0)
 KALSHI_BACKFILL_SLEEP_SEC = _env_float("KALSHI_BACKFILL_SLEEP_SEC", 0.1)
 LOG_FILE = os.getenv("LOG_FILE", "pred_market_bot.log")
 
@@ -95,6 +103,228 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+def _load_private_key_material() -> Optional[str]:
+    if KALSHI_PRIVATE_KEY and KALSHI_PRIVATE_KEY.strip():
+        return KALSHI_PRIVATE_KEY
+
+    if KALSHI_PRIVATE_KEY_PATH and KALSHI_PRIVATE_KEY_PATH.strip():
+        key_path = Path(KALSHI_PRIVATE_KEY_PATH).expanduser()
+        if key_path.exists():
+            return key_path.read_text(encoding="utf-8")
+        logging.warning("KALSHI_PRIVATE_KEY_PATH does not exist: %s", key_path)
+
+    return None
+
+
+def _object_to_dict(value: Any) -> dict:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "__dict__"):
+        return {k: v for k, v in vars(value).items() if not k.startswith("_")}
+    return {}
+
+
+def _extract_collection(payload: Any, keys: tuple[str, ...]) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+
+    as_dict = _object_to_dict(payload)
+    for key in keys:
+        if key in as_dict and isinstance(as_dict[key], list):
+            return as_dict[key]
+
+    for key in keys:
+        if hasattr(payload, key):
+            candidate = getattr(payload, key)
+            if isinstance(candidate, list):
+                return candidate
+
+    return []
+
+
+def _coerce_close_time_epoch(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric > 1e12:
+            return numeric / 1000.0
+        return numeric
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        normalized = text.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_yes_price(raw: dict) -> Optional[float]:
+    for key in ("yes_price", "yes_ask", "yes_bid", "yes", "yesPrice"):
+        if key not in raw or raw[key] is None:
+            continue
+        try:
+            value = float(raw[key])
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= value <= 1.0:
+            return value * 100.0
+        return value
+    return None
+
+
+def _normalize_market_record(raw_record: Any) -> Optional[dict]:
+    raw = _object_to_dict(raw_record)
+    if not raw:
+        return None
+
+    ticker = raw.get("ticker") or raw.get("market_ticker") or raw.get("event_ticker")
+    if not ticker:
+        return None
+
+    yes_price = _normalize_yes_price(raw)
+    if yes_price is None:
+        return None
+
+    volume = raw.get("volume")
+    if volume is None:
+        volume = raw.get("open_interest", raw.get("liquidity", 0))
+    try:
+        volume = float(volume)
+    except (TypeError, ValueError):
+        volume = 0.0
+
+    close_time = _coerce_close_time_epoch(
+        raw.get("close_time")
+        or raw.get("closeTime")
+        or raw.get("expiration_time")
+        or raw.get("expirationTime")
+    )
+
+    return {
+        "ticker": str(ticker),
+        "title": str(raw.get("title") or raw.get("subtitle") or raw.get("event_title") or ticker),
+        "description": str(raw.get("description") or raw.get("rules_primary") or ""),
+        "yes_price": float(_clamp(yes_price, 0.0, 100.0)),
+        "volume": volume,
+        "close_time": close_time if close_time is not None else 0.0,
+    }
+
+
+def _kalshi_auth_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if KALSHI_API_KEY:
+        headers["Authorization"] = f"Bearer {KALSHI_API_KEY}"
+    return headers
+
+
+def _resolve_maybe_awaitable(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        coroutine_result = cast(Coroutine[Any, Any, Any], result)
+        try:
+            return asyncio.run(coroutine_result)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coroutine_result)
+            finally:
+                loop.close()
+    return result
+
+
+def _sdk_call_with_fallback(api: Any, method_names: tuple[str, ...], kwargs: dict[str, Any]) -> Any:
+    if api is None:
+        return None
+
+    for method_name in method_names:
+        if not hasattr(api, method_name):
+            continue
+        method = getattr(api, method_name)
+        try:
+            return _resolve_maybe_awaitable(method(**kwargs))
+        except TypeError:
+            try:
+                return _resolve_maybe_awaitable(method(kwargs))
+            except Exception:
+                continue
+        except Exception:
+            continue
+    return None
+
+
+def init_kalshi_client() -> dict[str, Any]:
+    """Initialize Kalshi SDK clients when credentials are available."""
+    private_key_material = _load_private_key_material()
+
+    sdk_client = None
+    api_client = None
+    market_api = None
+    wallet_api = None
+    order_api = None
+
+    if KALSHI_KEY_ID and private_key_material:
+        try:
+            config = Configuration()
+            if hasattr(config, "host"):
+                config.host = KALSHI_HOST
+            if hasattr(config, "key_id"):
+                config.key_id = KALSHI_KEY_ID
+            if hasattr(config, "private_key"):
+                config.private_key = private_key_material
+
+            api_client = ApiClient(config)
+            market_api = MarketApi(api_client)
+
+            try:
+                wallet_module = importlib.import_module("kalshi_python_async.api.wallet_api")
+                wallet_api = wallet_module.WalletApi(api_client)
+            except Exception:
+                wallet_api = None
+
+            try:
+                order_module = importlib.import_module("kalshi_python_async.api.order_api")
+                order_api = order_module.OrderApi(api_client)
+            except Exception:
+                order_api = None
+
+            try:
+                sdk_client = KalshiClient(config)
+            except TypeError:
+                try:
+                    sdk_client = KalshiClient(api_client)
+                except Exception:
+                    sdk_client = None
+
+            logging.info("Initialized Kalshi SDK client with key_id auth.")
+        except Exception as exc:
+            logging.warning("Kalshi SDK initialization failed: %s", exc)
+    else:
+        logging.warning(
+            "Kalshi SDK credentials missing. Set KALSHI_KEY_ID and KALSHI_PRIVATE_KEY (or KALSHI_PRIVATE_KEY_PATH)."
+        )
+
+    return {
+        "client": sdk_client,
+        "api_client": api_client,
+        "market_api": market_api,
+        "wallet_api": wallet_api,
+        "order_api": order_api,
+    }
 
 
 def _extract_first_json_dict(text: str):
@@ -293,12 +523,15 @@ def _parse_kalshi_market_result(market_payload: dict) -> Optional[bool]:
 
 def fetch_kalshi_market(ticker: str, client: Any = None) -> Optional[dict]:
     """Fetch one Kalshi market payload by ticker."""
-    if client is not None:
+    sdk_client = client.get("client") if isinstance(client, dict) else client
+    market_api = client.get("market_api") if isinstance(client, dict) else None
+
+    if sdk_client is not None:
         try:
-            if hasattr(client, "get_market"):
-                response = client.get_market(ticker)
-            elif hasattr(client, "markets_api") and hasattr(client.markets_api, "get_market"):
-                response = client.markets_api.get_market(ticker)
+            if hasattr(sdk_client, "get_market"):
+                response = sdk_client.get_market(ticker=ticker)
+            elif hasattr(sdk_client, "markets_api") and hasattr(sdk_client.markets_api, "get_market"):
+                response = sdk_client.markets_api.get_market(ticker=ticker)
             else:
                 response = None
 
@@ -316,9 +549,19 @@ def fetch_kalshi_market(ticker: str, client: Any = None) -> Optional[dict]:
         except Exception as exc:
             logging.warning("Kalshi client lookup failed for %s (%s); falling back to HTTP.", ticker, exc)
 
+    if market_api is not None:
+        response = _sdk_call_with_fallback(
+            market_api,
+            ("get_market", "market_get"),
+            {"ticker": ticker},
+        )
+        if response is not None:
+            payload = _object_to_dict(response)
+            return payload.get("market", payload)
+
     url = f"{KALSHI_API_BASE.rstrip('/')}/markets/{ticker}"
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, headers=_kalshi_auth_headers(), timeout=15)
         if resp.status_code == 404:
             logging.warning("Kalshi market not found: %s", ticker)
             return None
@@ -458,11 +701,93 @@ def blend_probability(model_prob: float, market_prob: float, model_confidence: f
 
 def get_kalshi_markets(client, limit=100):
     """Fetch open markets with liquidity."""
-    # Use client.get_markets(status="open", etc.) or raw API
-    markets = client.get_markets(...)  # Adapt to SDK
-    df = pd.DataFrame(markets)
-    df = df[(df['volume'] > 10000) & (df['close_time'] > time.time() + 86400*2)]  # Filter
+    sdk_client = client.get("client") if isinstance(client, dict) else client
+    market_api = client.get("market_api") if isinstance(client, dict) else None
+
+    raw_markets: list[Any] = []
+
+    if sdk_client is not None:
+        response = _sdk_call_with_fallback(
+            sdk_client,
+            ("get_markets", "list_markets"),
+            {"status": "open", "limit": limit},
+        )
+        if response is not None:
+            raw_markets = _extract_collection(response, ("markets", "data", "results"))
+
+    if not raw_markets and market_api is not None:
+        response = _sdk_call_with_fallback(
+            market_api,
+            ("get_markets", "list_markets"),
+            {"status": "open", "limit": limit},
+        )
+        if response is not None:
+            raw_markets = _extract_collection(response, ("markets", "data", "results"))
+
+    if not raw_markets:
+        url = f"{KALSHI_API_BASE.rstrip('/')}/markets"
+        params = {"status": "open", "limit": limit}
+        resp = requests.get(url, params=params, headers=_kalshi_auth_headers(), timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+        raw_markets = payload.get("markets", payload.get("data", payload if isinstance(payload, list) else []))
+
+    normalized_markets = []
+    for raw_market in raw_markets:
+        record = _normalize_market_record(raw_market)
+        if record is not None:
+            normalized_markets.append(record)
+
+    df = pd.DataFrame(normalized_markets)
+    if df.empty:
+        return df
+
+    min_close_time = time.time() + 86400 * KALSHI_MIN_DAYS_TO_CLOSE
+    df = df[(df['volume'] > KALSHI_MIN_VOLUME) & (df['close_time'] > min_close_time)]
     return df
+
+
+def get_kalshi_balance(client: Any) -> float:
+    """Get available cash/balance from SDK if possible, else HTTP fallback."""
+    sdk_client = client.get("client") if isinstance(client, dict) else client
+    wallet_api = client.get("wallet_api") if isinstance(client, dict) else None
+
+    if sdk_client is not None:
+        for method_name in ("get_balance", "get_cash_balance", "get_portfolio_balance"):
+            if not hasattr(sdk_client, method_name):
+                continue
+            method = getattr(sdk_client, method_name)
+            try:
+                result = _resolve_maybe_awaitable(method())
+                if isinstance(result, (int, float)):
+                    return float(result)
+                as_dict = _object_to_dict(result)
+                for key in ("balance", "cash", "available_balance", "available_cash"):
+                    if key in as_dict:
+                        return float(as_dict[key])
+            except Exception:
+                continue
+
+    if wallet_api is not None:
+        response = _sdk_call_with_fallback(
+            wallet_api,
+            ("get_balance", "get_portfolio_balance", "get_wallet_balance"),
+            {},
+        )
+        if response is not None:
+            as_dict = _object_to_dict(response)
+            for key in ("balance", "cash", "available_balance", "available_cash"):
+                if key in as_dict:
+                    return float(as_dict[key])
+
+    url = f"{KALSHI_API_BASE.rstrip('/')}/portfolio/balance"
+    resp = requests.get(url, headers=_kalshi_auth_headers(), timeout=20)
+    resp.raise_for_status()
+    payload = resp.json()
+    balance = payload.get("balance", payload.get("cash", payload.get("available_balance")))
+    if balance is None:
+        raise RuntimeError("Unable to determine Kalshi balance from API response.")
+    return float(balance)
 
 def grok_estimate_probability(event_description: str) -> Optional[dict]:
     """Use Grok API for calibrated prob + reasoning."""
@@ -501,11 +826,52 @@ def calculate_edge(market_prob_yes: float, blended_prob_yes: float, fees=TRADING
 
 def place_kalshi_order(client, ticker, side, count, price):
     """Execute with risk checks."""
-    # client.place_order(...)
-    logging.info(f"Placed {side} on {ticker} at {price}")
+    if count <= 0:
+        logging.info("Skip order with non-positive size: %s", count)
+        return None
+
+    sdk_client = client.get("client") if isinstance(client, dict) else client
+    order_api = client.get("order_api") if isinstance(client, dict) else None
+
+    side_value = str(side).upper()
+    yes_price = int(round(_clamp(float(price), 0.0, 1.0) * 100))
+    order_payload = {
+        "ticker": ticker,
+        "side": side_value,
+        "count": int(count),
+        "yes_price": yes_price,
+        "order_type": "market",
+    }
+
+    if sdk_client is not None:
+        response = _sdk_call_with_fallback(
+            sdk_client,
+            ("place_order", "create_order", "post_order"),
+            order_payload,
+        )
+        if response is not None:
+            logging.info("Placed %s order via SDK client: %s x%s @ %s", side_value, ticker, count, yes_price)
+            return response
+
+    if order_api is not None:
+        response = _sdk_call_with_fallback(
+            order_api,
+            ("create_order", "place_order", "post_order"),
+            order_payload,
+        )
+        if response is not None:
+            logging.info("Placed %s order via SDK order API: %s x%s @ %s", side_value, ticker, count, yes_price)
+            return response
+
+    url = f"{KALSHI_API_BASE.rstrip('/')}/portfolio/orders"
+    resp = requests.post(url, json=order_payload, headers=_kalshi_auth_headers(), timeout=20)
+    resp.raise_for_status()
+    response_json = resp.json()
+    logging.info("Placed %s order via HTTP: %s x%s @ %s", side_value, ticker, count, yes_price)
+    return response_json
 
 def main_loop():
-    client = KalshiClient(...)  # Init with auth
+    client = init_kalshi_client()
     if SHADOW_MODE:
         logging.info(
             "SHADOW_MODE enabled — logging calibration rows to %s and %s (no execution).",
@@ -562,7 +928,7 @@ def main_loop():
             if direction and edge > 0:
                 size = calculate_position_size(
                     edge,
-                    bankroll=client.get_balance(),
+                    bankroll=get_kalshi_balance(client),
                     grok_confidence=grok_data['confidence'],
                 )
                 if size > 0:

@@ -115,3 +115,39 @@ python -m crypto_xrp.research_loop.run_supervisor_loop \
 Notes:
 - Optuna trials optimize the walk-forward score, not a single backtest score.
 - Supervisor accept/reject and best-tracking logic stays the same.
+
+## Kalshi Shadow Mode Calibration
+
+Recommended starter environment values for running the Kalshi bot in shadow mode:
+
+```bash
+export SHADOW_MODE=true
+export MIN_EDGE=0.08
+export TRADING_FEES=0.01
+export SLIPPAGE=0.002
+export MODEL_WEIGHT_BASE=0.40
+export MODEL_WEIGHT_MAX=0.60
+export MIN_MODEL_CONFIDENCE=0.55
+export MAX_POSITION_PCT=0.02
+export FRACTIONAL_KELLY=0.50
+export SHADOW_LOG_JSONL=kalshi/shadow_calibration_log.jsonl
+export SHADOW_LOG_CSV=kalshi/shadow_calibration_log.csv
+```
+
+Run the bot (shadow mode will log calibration rows and skip live execution):
+
+```bash
+python kalshi/script.py
+```
+
+Backfill realized outcomes after markets settle:
+
+```bash
+python kalshi/script.py --backfill-outcomes --dry-run
+python kalshi/script.py --backfill-outcomes
+```
+
+Tuning guidance:
+- Keep `SHADOW_MODE=true` until calibration logs show stable positive edge after costs.
+- If too few candidates are logged, lower `MIN_MODEL_CONFIDENCE` to `0.50`.
+- If too many weak candidates are logged, raise `MIN_EDGE` to `0.10`.
