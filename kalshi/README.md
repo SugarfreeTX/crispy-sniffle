@@ -12,7 +12,7 @@ This README explains how to run the trading script and query its SQLite logs.
 Use the same interpreter used in this workspace:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python
 ```
 
 ## How To Execute
@@ -20,13 +20,13 @@ Use the same interpreter used in this workspace:
 From anywhere:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python /Users/khemra/dev/crispy-sniffle/kalshi/script.py
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python /Users/khemra/dev/crispy-sniffle/kalshi/script.py
 ```
 
 From repo root (`/Users/khemra/dev/crispy-sniffle`):
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py
 ```
 
 ## Usable Flags
@@ -34,7 +34,7 @@ From repo root (`/Users/khemra/dev/crispy-sniffle`):
 ### 1) Shadow calibration summary
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py --shadow-summary
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --shadow-summary
 ```
 
 Returns JSON summary including:
@@ -49,13 +49,13 @@ Returns JSON summary including:
 Default 20:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py --orders-recent
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --orders-recent
 ```
 
 Custom N (example 25):
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py --orders-recent 25
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --orders-recent 25
 ```
 
 Returns JSON with recent rows from `executed_orders` joined to calibration context (`edge`, `confidence`, `blended_prob`, etc.).
@@ -63,13 +63,13 @@ Returns JSON with recent rows from `executed_orders` joined to calibration conte
 ### 3) Backfill settled outcomes
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py --backfill-outcomes
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --backfill-outcomes
 ```
 
 Dry run:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py --backfill-outcomes --dry-run
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --backfill-outcomes --dry-run
 ```
 
 ### 4) Failed orders report
@@ -77,13 +77,13 @@ Dry run:
 Default 20:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py --orders-failures
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --orders-failures
 ```
 
 Custom N (example 50):
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/envs/vbt_env/bin/python kalshi/script.py --orders-failures 50
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --orders-failures 50
 ```
 
 Returns JSON including:

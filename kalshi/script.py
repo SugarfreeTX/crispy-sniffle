@@ -7,6 +7,8 @@ import json
 import sqlite3
 import importlib
 import inspect
+import signal
+import threading
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,7 +53,7 @@ KALSHI_KEY_ID = os.getenv("KALSHI_KEY_ID")
 KALSHI_PRIVATE_KEY = os.getenv("KALSHI_PRIVATE_KEY")
 KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH")
 GROK_API_KEY = os.getenv("GROK_API_KEY")  # or xAI client
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-4.20-multi-agent-0309")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-4")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -84,11 +86,15 @@ SHADOW_MODE = _env_bool("SHADOW_MODE", False)
 SHADOW_LOG_JSONL = os.getenv("SHADOW_LOG_JSONL", str(BASE_DIR / "shadow_calibration_log.jsonl"))
 SHADOW_LOG_CSV = os.getenv("SHADOW_LOG_CSV", str(BASE_DIR / "shadow_calibration_log.csv"))
 SHADOW_DB_PATH = os.getenv("SHADOW_DB_PATH", str(BASE_DIR / "shadow_calibration.db"))
-KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2")
+KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2") # live/production
 KALSHI_HOST = os.getenv("KALSHI_HOST", KALSHI_API_BASE)
 KALSHI_MIN_VOLUME = _env_float("KALSHI_MIN_VOLUME", 10000)
 KALSHI_MIN_DAYS_TO_CLOSE = _env_float("KALSHI_MIN_DAYS_TO_CLOSE", 2.0)
 KALSHI_BACKFILL_SLEEP_SEC = _env_float("KALSHI_BACKFILL_SLEEP_SEC", 0.1)
+POLL_INTERVAL_SEC = _env_float("POLL_INTERVAL_SEC", 300.0)
+LOOP_DIAGNOSTICS = _env_bool("LOOP_DIAGNOSTICS", True)
+RELAX_MARKET_FILTERS_IF_EMPTY = _env_bool("RELAX_MARKET_FILTERS_IF_EMPTY", True)
+SHADOW_LOG_ON_GROK_FAILURE = _env_bool("SHADOW_LOG_ON_GROK_FAILURE", True)
 LOG_FILE = os.getenv("LOG_FILE", "pred_market_bot.log")
 
 SHADOW_CSV_FIELDS = [
@@ -108,9 +114,44 @@ SHADOW_CSV_FIELDS = [
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO
                     , format='%(asctime)s - %(levelname)s - %(message)s')
 
+_shutdown_event = threading.Event()
+
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+def _request_shutdown(signum: int, _frame: Any) -> None:
+    if _shutdown_event.is_set():
+        return
+    logging.info("Received signal %s; requesting graceful shutdown.", signum)
+    _shutdown_event.set()
+
+
+def _install_signal_handlers() -> None:
+    try:
+        signal.signal(signal.SIGINT, _request_shutdown)
+        signal.signal(signal.SIGTERM, _request_shutdown)
+    except ValueError:
+        # Signal handlers can only be installed from the main thread.
+        logging.warning("Unable to install signal handlers from this thread.")
+
+
+def _close_kalshi_client(client: Any) -> None:
+    """Best-effort cleanup for SDK/network resources."""
+    if not isinstance(client, dict):
+        return
+
+    for key in ("client", "api_client"):
+        obj = client.get(key)
+        if obj is None:
+            continue
+        for method_name in ("close", "aclose"):
+            if hasattr(obj, method_name):
+                try:
+                    _resolve_maybe_awaitable(getattr(obj, method_name)())
+                except Exception:
+                    pass
 
 
 def _load_private_key_material() -> Optional[str]:
@@ -161,6 +202,8 @@ def _extract_collection(payload: Any, keys: tuple[str, ...]) -> list[Any]:
 def _coerce_close_time_epoch(value: Any) -> Optional[float]:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return value.timestamp()
     if isinstance(value, (int, float)):
         numeric = float(value)
         if numeric > 1e12:
@@ -183,7 +226,17 @@ def _coerce_close_time_epoch(value: Any) -> Optional[float]:
 
 
 def _normalize_yes_price(raw: dict) -> Optional[float]:
-    for key in ("yes_price", "yes_ask", "yes_bid", "yes", "yesPrice"):
+    for key in (
+        "yes_price",
+        "yes_ask",
+        "yes_bid",
+        "yes",
+        "yesPrice",
+        "yes_ask_dollars",
+        "yes_bid_dollars",
+        "last_price_dollars",
+        "previous_price_dollars",
+    ):
         if key not in raw or raw[key] is None:
             continue
         try:
@@ -211,7 +264,14 @@ def _normalize_market_record(raw_record: Any) -> Optional[dict]:
 
     volume = raw.get("volume")
     if volume is None:
-        volume = raw.get("open_interest", raw.get("liquidity", 0))
+        volume = (
+            raw.get("volume_fp")
+            or raw.get("open_interest_fp")
+            or raw.get("open_interest")
+            or raw.get("liquidity_dollars")
+            or raw.get("liquidity")
+            or 0
+        )
     try:
         volume = float(volume)
     except (TypeError, ValueError):
@@ -1256,7 +1316,7 @@ def blend_probability(model_prob: float, market_prob: float, model_confidence: f
     blended = model_weight * model_prob + (1.0 - model_weight) * market_prob
     return _clamp(blended, 0.0, 1.0)
 
-def get_kalshi_markets(client, limit=100):
+def get_kalshi_markets(client, limit=100, diagnostics: bool = False):
     """Fetch open markets with liquidity."""
     sdk_client = client.get("client") if isinstance(client, dict) else client
     market_api = client.get("market_api") if isinstance(client, dict) else None
@@ -1289,18 +1349,53 @@ def get_kalshi_markets(client, limit=100):
         payload = resp.json()
         raw_markets = payload.get("markets", payload.get("data", payload if isinstance(payload, list) else []))
 
+    raw_count = len(raw_markets)
     normalized_markets = []
     for raw_market in raw_markets:
         record = _normalize_market_record(raw_market)
         if record is not None:
             normalized_markets.append(record)
 
+    normalized_count = len(normalized_markets)
+
     df = pd.DataFrame(normalized_markets)
     if df.empty:
+        if diagnostics:
+            logging.info(
+                "DIAG markets: raw=%s normalized=%s filtered=0 (empty dataframe)",
+                raw_count,
+                normalized_count,
+            )
         return df
 
     min_close_time = time.time() + 86400 * KALSHI_MIN_DAYS_TO_CLOSE
-    df = df[(df['volume'] > KALSHI_MIN_VOLUME) & (df['close_time'] > min_close_time)]
+    strict_df = df[(df['volume'] > KALSHI_MIN_VOLUME) & (df['close_time'] > min_close_time)]
+
+    if strict_df.empty and RELAX_MARKET_FILTERS_IF_EMPTY:
+        relaxed_df = df[df['close_time'] > min_close_time]
+        if diagnostics:
+            positive_volume_count = int((df['volume'] > 0).sum())
+            logging.warning(
+                "DIAG markets: strict filter empty (min_volume=%s). Falling back to close_time-only filter: %s rows (positive_volume=%s/%s).",
+                KALSHI_MIN_VOLUME,
+                len(relaxed_df),
+                positive_volume_count,
+                len(df),
+            )
+        df = relaxed_df
+    else:
+        df = strict_df
+
+    if diagnostics:
+        logging.info(
+            "DIAG markets: raw=%s normalized=%s filtered=%s min_volume=%s min_days_to_close=%s",
+            raw_count,
+            normalized_count,
+            len(df),
+            KALSHI_MIN_VOLUME,
+            KALSHI_MIN_DAYS_TO_CLOSE,
+        )
+
     return df
 
 
@@ -1427,7 +1522,8 @@ def place_kalshi_order(client, ticker, side, count, price):
     logging.info("Placed %s order via HTTP: %s x%s @ %s", side_value, ticker, count, yes_price)
     return response_json
 
-def main_loop():
+def main_loop(run_once: bool = False, diagnostics: bool = LOOP_DIAGNOSTICS):
+    _install_signal_handlers()
     client = init_kalshi_client()
     init_shadow_db()
     if SHADOW_MODE:
@@ -1437,75 +1533,127 @@ def main_loop():
             SHADOW_LOG_JSONL,
             SHADOW_LOG_CSV,
         )
-    while True:  # Or scheduled
-        markets = get_kalshi_markets(client)
-        for _, m in markets.iterrows():
-            desc = m['title'] + " - " + m.get('description', '')
-            ticker = m['ticker']
-            market_prob = _clamp(float(m['yes_price']) / 100.0, 0.0, 1.0)
-            grok_data = grok_estimate_probability(desc)
-            if not grok_data:
-                continue
+    try:
+        while not _shutdown_event.is_set():
+            cycle_started = time.time()
+            stats: dict[str, int] = {
+                "markets_seen": 0,
+                "grok_attempted": 0,
+                "grok_ok": 0,
+                "grok_failed": 0,
+                "shadow_logged": 0,
+                "low_conf_skips": 0,
+                "no_edge_skips": 0,
+                "size_zero_skips": 0,
+                "orders_submitted": 0,
+                "orders_failed": 0,
+                "market_errors": 0,
+            }
 
-            blended_prob = blend_probability(
-                model_prob=grok_data['prob'],
-                market_prob=market_prob,
-                model_confidence=grok_data['confidence'],
-            )
-            direction, edge = calculate_edge(market_prob, blended_prob)
+            markets = get_kalshi_markets(client, diagnostics=diagnostics)
+            stats["markets_seen"] = len(markets)
 
-            if SHADOW_MODE:
-                log_shadow_calibration(
-                    ticker=ticker,
-                    market_prob=market_prob,
-                    model_prob=grok_data['prob'],
-                    blended_prob=blended_prob,
-                    confidence=grok_data['confidence'],
-                    direction=direction,
-                    edge=edge,
-                )
-                logging.info(
-                    "SHADOW-MODE: %s | direction=%s edge=%.2f%% market=%.3f model=%.3f blend=%.3f conf=%.2f",
-                    ticker,
-                    direction or "NONE",
-                    edge * 100.0,
-                    market_prob,
-                    grok_data['prob'],
-                    blended_prob,
-                    grok_data['confidence'],
-                )
-                continue
+            if diagnostics and markets.empty:
+                logging.info("DIAG cycle: no markets available after filtering.")
 
-            if grok_data['confidence'] < MIN_MODEL_CONFIDENCE:
-                logging.info(
-                    "Skip low-confidence model output: %s | confidence=%.2f",
-                    ticker,
-                    grok_data['confidence'],
-                )
-                continue
+            for _, m in markets.iterrows():
+                if _shutdown_event.is_set():
+                    break
 
-            if direction and edge > 0:
-                calibration_entry = {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "ticker": ticker,
-                    "market_prob": round(market_prob, 6),
-                    "model_prob": round(grok_data['prob'], 6),
-                    "blended_prob": round(blended_prob, 6),
-                    "confidence": round(grok_data['confidence'], 6),
-                    "direction": direction,
-                    "edge": round(edge, 6),
-                    "realized_outcome": None,
-                    "shadow_mode": False,
-                    "executed": False,
-                }
-                calibration_id = _insert_shadow_calibration_db(calibration_entry)
+                try:
+                    desc = m['title'] + " - " + m.get('description', '')
+                    ticker = m['ticker']
+                    market_prob = _clamp(float(m['yes_price']) / 100.0, 0.0, 1.0)
 
-                size = calculate_position_size(
-                    edge,
-                    bankroll=get_kalshi_balance(client),
-                    grok_confidence=grok_data['confidence'],
-                )
-                if size > 0:
+                    stats["grok_attempted"] += 1
+                    grok_data = grok_estimate_probability(desc)
+                    if not grok_data:
+                        stats["grok_failed"] += 1
+                        if SHADOW_MODE and SHADOW_LOG_ON_GROK_FAILURE:
+                            log_shadow_calibration(
+                                ticker=ticker,
+                                market_prob=market_prob,
+                                model_prob=market_prob,
+                                blended_prob=market_prob,
+                                confidence=0.0,
+                                direction=None,
+                                edge=0.0,
+                            )
+                            stats["shadow_logged"] += 1
+                            logging.warning(
+                                "SHADOW-MODE fallback log: %s | Grok unavailable, storing market-only row.",
+                                ticker,
+                            )
+                        continue
+
+                    stats["grok_ok"] += 1
+                    blended_prob = blend_probability(
+                        model_prob=grok_data['prob'],
+                        market_prob=market_prob,
+                        model_confidence=grok_data['confidence'],
+                    )
+                    direction, edge = calculate_edge(market_prob, blended_prob)
+
+                    if SHADOW_MODE:
+                        log_shadow_calibration(
+                            ticker=ticker,
+                            market_prob=market_prob,
+                            model_prob=grok_data['prob'],
+                            blended_prob=blended_prob,
+                            confidence=grok_data['confidence'],
+                            direction=direction,
+                            edge=edge,
+                        )
+                        stats["shadow_logged"] += 1
+                        logging.info(
+                            "SHADOW-MODE: %s | direction=%s edge=%.2f%% market=%.3f model=%.3f blend=%.3f conf=%.2f",
+                            ticker,
+                            direction or "NONE",
+                            edge * 100.0,
+                            market_prob,
+                            grok_data['prob'],
+                            blended_prob,
+                            grok_data['confidence'],
+                        )
+                        continue
+
+                    if grok_data['confidence'] < MIN_MODEL_CONFIDENCE:
+                        stats["low_conf_skips"] += 1
+                        logging.info(
+                            "Skip low-confidence model output: %s | confidence=%.2f",
+                            ticker,
+                            grok_data['confidence'],
+                        )
+                        continue
+
+                    if not (direction and edge > 0):
+                        stats["no_edge_skips"] += 1
+                        continue
+
+                    calibration_entry = {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "ticker": ticker,
+                        "market_prob": round(market_prob, 6),
+                        "model_prob": round(grok_data['prob'], 6),
+                        "blended_prob": round(blended_prob, 6),
+                        "confidence": round(grok_data['confidence'], 6),
+                        "direction": direction,
+                        "edge": round(edge, 6),
+                        "realized_outcome": None,
+                        "shadow_mode": False,
+                        "executed": False,
+                    }
+                    calibration_id = _insert_shadow_calibration_db(calibration_entry)
+
+                    size = calculate_position_size(
+                        edge,
+                        bankroll=get_kalshi_balance(client),
+                        grok_confidence=grok_data['confidence'],
+                    )
+                    if size <= 0:
+                        stats["size_zero_skips"] += 1
+                        continue
+
                     yes_price = int(round(_clamp(float(market_prob), 0.0, 1.0) * 100))
                     try:
                         response = place_kalshi_order(client, ticker, direction, size, market_prob)
@@ -1519,6 +1667,7 @@ def main_loop():
                             status="submitted",
                             response=response,
                         )
+                        stats["orders_submitted"] += 1
                         logging.info(
                             "Edge trade: %s | Edge: %.2f%% | market=%.3f model=%.3f blend=%.3f conf=%.2f",
                             desc,
@@ -1539,9 +1688,42 @@ def main_loop():
                             status="failed",
                             error=str(exc),
                         )
+                        stats["orders_failed"] += 1
                         logging.exception("Order placement failed for %s: %s", ticker, exc)
-        
-        time.sleep(300)  # Poll interval
+                except Exception:
+                    stats["market_errors"] += 1
+                    logging.exception("Unhandled market processing error.")
+
+            if diagnostics:
+                elapsed_sec = time.time() - cycle_started
+                logging.info(
+                    "DIAG cycle summary: elapsed_sec=%.1f markets_seen=%s grok_attempted=%s grok_ok=%s grok_failed=%s "
+                    "shadow_logged=%s low_conf_skips=%s no_edge_skips=%s size_zero_skips=%s orders_submitted=%s "
+                    "orders_failed=%s market_errors=%s",
+                    elapsed_sec,
+                    stats["markets_seen"],
+                    stats["grok_attempted"],
+                    stats["grok_ok"],
+                    stats["grok_failed"],
+                    stats["shadow_logged"],
+                    stats["low_conf_skips"],
+                    stats["no_edge_skips"],
+                    stats["size_zero_skips"],
+                    stats["orders_submitted"],
+                    stats["orders_failed"],
+                    stats["market_errors"],
+                )
+
+            if run_once:
+                logging.info("Run-once mode complete; exiting main loop.")
+                break
+
+            if _shutdown_event.wait(POLL_INTERVAL_SEC):  # Poll interval, interruptible on shutdown
+                break
+    finally:
+        _close_kalshi_client(client)
+
+    logging.info("Graceful shutdown complete.")
 
 def _parse_cli():
     import argparse
@@ -1578,6 +1760,16 @@ def _parse_cli():
         metavar="N",
         help="Print recent failed orders plus grouped error summaries (default 20).",
     )
+    parser.add_argument(
+        "--run-once",
+        action="store_true",
+        help="Run one market scan cycle and exit (useful for diagnostics).",
+    )
+    parser.add_argument(
+        "--no-diagnostics",
+        action="store_true",
+        help="Disable per-cycle diagnostic logging.",
+    )
     return parser.parse_args()
 
 
@@ -1596,4 +1788,4 @@ if __name__ == "__main__":
         stats = get_failed_orders_report(limit=args.orders_failures)
         print(json.dumps(stats, indent=2))
     else:
-        main_loop()
+        main_loop(run_once=args.run_once, diagnostics=not args.no_diagnostics)

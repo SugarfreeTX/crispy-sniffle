@@ -1,0 +1,11 @@
+=== GROK POLICY (shadow log) ===
+Policy: grok
+Initial cash: $99,961.94
+Final equity: $99,961.94
+Return: 0.00%
+Peak equity: $99,961.94
+Max DD: 0.00%
+Trades: 1 (BUY 1, SELL 0)
+Win rate (closed): 0.0%
+Profit factor: 0.0
+Sharpe (step-based): 0.000

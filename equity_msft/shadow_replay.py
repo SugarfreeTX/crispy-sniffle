@@ -660,7 +660,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Replay shadow_grok_log decisions (Grok vs deterministic) for hypothetical P&L analysis."
     )
-    p.add_argument("--shadow-log", default="equity_msft/shadow_grok_log.jsonl", help="Path to the shadow jsonl")
+    p.add_argument("--shadow-log", default="equity_msft/shadow_grok_log_relaxed.jsonl", help="Path to the shadow jsonl")
     p.add_argument("--output-dir", default="equity_msft/shadow_replay_outputs", help="Where to write csv/json/txt artifacts")
     p.add_argument("--dry-logs-dir", default="equity_msft/test_runs", help="Directory containing trading_log_dry_*.txt (for price/sizing)")
     p.add_argument("--initial-cash", type=float, default=99961.94, help="Starting cash (matches observed dry-run state)")
