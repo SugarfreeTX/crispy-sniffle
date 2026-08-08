@@ -31,18 +31,36 @@ From repo root (`/Users/khemra/dev/crispy-sniffle`):
 
 ## Usable Flags
 
-### 1) Shadow calibration summary
+### 1) Shadow calibration summary (lightweight)
 
 ```bash
 /opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --shadow-summary
 ```
 
 Returns JSON summary including:
-- total/pending/resolved calibration rows
+- total/pending/resolved/missing calibration rows
 - average edge/confidence
-- Brier score
+- Brier score (blended only)
 - order counters (`orders_total`, `orders_submitted`, `orders_failed`)
 - calibration bins
+
+`rows_missing` counts markets Kalshi no longer returns (usually delisted). Those cannot be backfilled later — run `--backfill-outcomes` regularly to avoid this gap.
+
+### 1b) Detailed shadow performance report (recommended)
+
+```bash
+/opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --shadow-report
+```
+
+Returns a richer JSON report for deciding whether the bot is ready to leave shadow mode:
+- model vs market vs blended Brier/MAE and “who is closer” counts
+- trade-signal-only hit rate and fee-aware unit PnL
+- edge / confidence buckets on resolved trade signals
+- pending age buckets and unresolvable (`resolution_status='missing'`) counts
+- top ticker prefixes (universe composition)
+- traffic-light `verdict` with plain-language notes (`ready_for_live`)
+
+Use this after each backfill when interpreting performance.
 
 ### 2) Recent executed orders
 
@@ -71,6 +89,12 @@ Dry run:
 ```bash
 /opt/homebrew/Caskroom/miniforge/base/envs/kalshi_env/bin/python kalshi/script.py --backfill-outcomes --dry-run
 ```
+
+**Why timing matters:** backfill looks up each pending ticker on Kalshi. Settled markets still available return `result=yes|no` and get `realized_outcome` filled. Markets that have been delisted return HTTP 404; those rows are marked `resolution_status='missing'` and can never recover an outcome. Waiting too long therefore permanently shrinks your resolved sample.
+
+Suggested habit: run `--backfill-outcomes` daily (or after each bot session), then `--shadow-report` to re-read metrics.
+
+Backfill JSON includes `tickers_missing`, `rows_marked_missing`, and `sample_missing_tickers` so the gap is visible.
 
 ### 4) Failed orders report
 

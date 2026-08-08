@@ -1603,12 +1603,12 @@ def main(
         logger.exception("Unexpected error in main trading loop")
     finally:
         # Always send summary — even on error or early exit
-        send_email_summary(
-            packet=packet,
-            action=action if action is not None else "SKIPPED/ERROR",
-            reason=reason if reason is not None else "",
-            dry_run=dry_run
-        )
+        # send_email_summary(
+        #     packet=packet,
+        #     action=action if action is not None else "SKIPPED/ERROR",
+        #     reason=reason if reason is not None else "",
+        #     dry_run=dry_run
+        # )
     logger.info("=== Daily trading loop finished ===")
         
 if __name__ == "__main__":

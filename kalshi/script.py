@@ -7,6 +7,7 @@ import json
 import sqlite3
 import importlib
 import inspect
+import sys
 import signal
 import threading
 import requests
@@ -95,7 +96,7 @@ POLL_INTERVAL_SEC = _env_float("POLL_INTERVAL_SEC", 300.0)
 LOOP_DIAGNOSTICS = _env_bool("LOOP_DIAGNOSTICS", True)
 RELAX_MARKET_FILTERS_IF_EMPTY = _env_bool("RELAX_MARKET_FILTERS_IF_EMPTY", True)
 SHADOW_LOG_ON_GROK_FAILURE = _env_bool("SHADOW_LOG_ON_GROK_FAILURE", True)
-LOG_FILE = os.getenv("LOG_FILE", "pred_market_bot.log")
+LOG_FILE = os.getenv("LOG_FILE", str(BASE_DIR / "pred_market_bot.log"))
 
 SHADOW_CSV_FIELDS = [
     "timestamp",
@@ -111,8 +112,20 @@ SHADOW_CSV_FIELDS = [
     "executed",
 ]
 
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO
-                    , format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging with explicit file handler for better reliability
+try:
+    log_path = Path(LOG_FILE)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=str(log_path),
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+    )
+    # Add StreamHandler to also print to stderr for visibility
+    logging.getLogger().addHandler(logging.StreamHandler())
+except Exception as exc:
+    print(f"WARNING: Failed to configure file logging: {exc}. Using stderr only.", file=sys.stderr)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 _shutdown_event = threading.Event()
 
@@ -124,6 +137,8 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 def _request_shutdown(signum: int, _frame: Any) -> None:
     if _shutdown_event.is_set():
         return
+    message = f"Received signal {signum}; requesting graceful shutdown. Will exit once current polling/processing completes..."
+    print(message, file=sys.stderr, flush=True)
     logging.info("Received signal %s; requesting graceful shutdown.", signum)
     _shutdown_event.set()
 
@@ -464,6 +479,10 @@ def _parse_grok_probability_response(content: str) -> Optional[dict]:
 
 
 def _call_grok_chat(event_description: str, strict: bool = False) -> Optional[str]:
+    if _shutdown_event.is_set():
+        logging.info("Grok API call skipped: shutdown requested.")
+        return None
+    
     payload = {
         "model": GROK_MODEL,
         "messages": [{
@@ -502,6 +521,16 @@ def _connect_shadow_db(db_path: Optional[str] = None) -> sqlite3.Connection:
     return connection
 
 
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, col_def: str) -> None:
+    """Add a column if missing (SQLite has no IF NOT EXISTS for ADD COLUMN)."""
+    existing = {
+        str(row[1])
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+
+
 def init_shadow_db(db_path: Optional[str] = None) -> None:
     with _connect_shadow_db(db_path) as connection:
         connection.execute(
@@ -518,10 +547,13 @@ def init_shadow_db(db_path: Optional[str] = None) -> None:
                 edge REAL NOT NULL,
                 realized_outcome INTEGER,
                 shadow_mode INTEGER NOT NULL DEFAULT 1,
-                executed INTEGER NOT NULL DEFAULT 0
+                executed INTEGER NOT NULL DEFAULT 0,
+                resolution_status TEXT
             )
             """
         )
+        # Older DBs created before resolution_status existed.
+        _ensure_column(connection, "shadow_calibration", "resolution_status", "TEXT")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_shadow_calibration_ticker ON shadow_calibration (ticker)"
         )
@@ -530,6 +562,9 @@ def init_shadow_db(db_path: Optional[str] = None) -> None:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_shadow_calibration_timestamp ON shadow_calibration (timestamp)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shadow_calibration_resolution ON shadow_calibration (resolution_status)"
         )
         connection.execute(
             """
@@ -696,7 +731,8 @@ def _load_shadow_calibration_from_db(db_path: Optional[str] = None) -> list[dict
                 edge,
                 realized_outcome,
                 shadow_mode,
-                executed
+                executed,
+                resolution_status
             FROM shadow_calibration
             ORDER BY id ASC
             """
@@ -720,6 +756,7 @@ def _load_shadow_calibration_from_db(db_path: Optional[str] = None) -> list[dict
                 "realized_outcome": realized,
                 "shadow_mode": True if shadow_mode is None else shadow_mode,
                 "executed": False if executed is None else executed,
+                "resolution_status": row["resolution_status"],
             }
         )
     return result
@@ -749,8 +786,21 @@ def get_shadow_summary(db_path: Optional[str] = None) -> dict[str, Any]:
             """
             SELECT
                 COUNT(1) AS rows_total,
-                SUM(CASE WHEN realized_outcome IS NULL THEN 1 ELSE 0 END) AS rows_pending,
+                SUM(
+                    CASE
+                        WHEN realized_outcome IS NULL
+                             AND COALESCE(resolution_status, '') != 'missing' THEN 1
+                        ELSE 0
+                    END
+                ) AS rows_pending,
                 SUM(CASE WHEN realized_outcome IS NOT NULL THEN 1 ELSE 0 END) AS rows_resolved,
+                SUM(
+                    CASE
+                        WHEN realized_outcome IS NULL
+                             AND COALESCE(resolution_status, '') = 'missing' THEN 1
+                        ELSE 0
+                    END
+                ) AS rows_missing,
                 AVG(edge) AS avg_edge,
                 AVG(confidence) AS avg_confidence
             FROM shadow_calibration
@@ -802,12 +852,14 @@ def get_shadow_summary(db_path: Optional[str] = None) -> dict[str, Any]:
     rows_total = int(totals_row["rows_total"] or 0)
     rows_pending = int(totals_row["rows_pending"] or 0)
     rows_resolved = int(totals_row["rows_resolved"] or 0)
+    rows_missing = int(totals_row["rows_missing"] or 0)
 
     summary: dict[str, Any] = {
         "db_path": str(Path(db_path or SHADOW_DB_PATH)),
         "rows_total": rows_total,
         "rows_pending": rows_pending,
         "rows_resolved": rows_resolved,
+        "rows_missing": rows_missing,
         "avg_edge": float(totals_row["avg_edge"]) if totals_row and totals_row["avg_edge"] is not None else None,
         "avg_confidence": float(totals_row["avg_confidence"]) if totals_row and totals_row["avg_confidence"] is not None else None,
         "yes_signals": int(direction_row["yes_signals"] or 0),
@@ -836,6 +888,522 @@ def get_shadow_summary(db_path: Optional[str] = None) -> dict[str, Any]:
         )
     summary["calibration_bins"] = bins
     return summary
+
+
+def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        # Support trailing Z and bare offsets.
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _age_bucket_days(days: float) -> str:
+    if days < 1:
+        return "<1d"
+    if days < 7:
+        return "1-6d"
+    if days < 14:
+        return "7-13d"
+    if days < 30:
+        return "14-29d"
+    return "30d+"
+
+
+def _ticker_prefix(ticker: str) -> str:
+    text = str(ticker or "")
+    if "-" in text:
+        return text.split("-", 1)[0]
+    return text or "<unknown>"
+
+
+def _safe_div(numerator: float, denominator: float) -> Optional[float]:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _unit_pnl(direction: str, market_prob: float, realized_outcome: float, cost: float = 0.0) -> Optional[float]:
+    """Per-contract unit PnL if entered at market_prob (YES price), minus flat cost."""
+    side = str(direction or "").upper()
+    if side == "YES":
+        return float(realized_outcome) - float(market_prob) - cost
+    if side == "NO":
+        return (1.0 - float(realized_outcome)) - (1.0 - float(market_prob)) - cost
+    return None
+
+
+def _directional_hit(direction: str, realized_outcome: float) -> Optional[bool]:
+    side = str(direction or "").upper()
+    if side == "YES":
+        return bool(int(realized_outcome) == 1)
+    if side == "NO":
+        return bool(int(realized_outcome) == 0)
+    return None
+
+
+def get_shadow_report(
+    db_path: Optional[str] = None,
+    *,
+    trading_costs: Optional[float] = None,
+) -> dict[str, Any]:
+    """
+    Detailed shadow calibration report for model-vs-market quality and trade readiness.
+
+    Extends the lightweight --shadow-summary with:
+    - model / market / blended Brier + MAE
+    - trade-signal-only hit rate and fee-aware unit PnL
+    - edge / confidence buckets on resolved trade signals
+    - pending age buckets and unresolvable (API-missing) counts
+    - a traffic-light verdict with plain-language notes
+    """
+    costs = TRADING_FEES + SLIPPAGE if trading_costs is None else float(trading_costs)
+    summary = get_shadow_summary(db_path)
+    init_shadow_db(db_path)
+
+    with _connect_shadow_db(db_path) as connection:
+        accuracy_row = connection.execute(
+            """
+            SELECT
+                COUNT(1) AS n,
+                AVG((market_prob - realized_outcome) * (market_prob - realized_outcome)) AS market_brier,
+                AVG((model_prob - realized_outcome) * (model_prob - realized_outcome)) AS model_brier,
+                AVG((blended_prob - realized_outcome) * (blended_prob - realized_outcome)) AS blended_brier,
+                AVG(ABS(market_prob - realized_outcome)) AS market_mae,
+                AVG(ABS(model_prob - realized_outcome)) AS model_mae,
+                AVG(ABS(blended_prob - realized_outcome)) AS blended_mae,
+                SUM(CASE WHEN ABS(model_prob - realized_outcome) < ABS(market_prob - realized_outcome) THEN 1 ELSE 0 END) AS model_closer,
+                SUM(CASE WHEN ABS(model_prob - realized_outcome) > ABS(market_prob - realized_outcome) THEN 1 ELSE 0 END) AS market_closer,
+                SUM(CASE WHEN ABS(model_prob - realized_outcome) = ABS(market_prob - realized_outcome) THEN 1 ELSE 0 END) AS tie_closer
+            FROM shadow_calibration
+            WHERE realized_outcome IS NOT NULL
+            """
+        ).fetchone()
+
+        trade_agg = connection.execute(
+            """
+            SELECT
+                COUNT(1) AS signals_total,
+                SUM(CASE WHEN realized_outcome IS NULL THEN 1 ELSE 0 END) AS signals_pending,
+                SUM(CASE WHEN realized_outcome IS NOT NULL THEN 1 ELSE 0 END) AS signals_resolved,
+                SUM(CASE WHEN direction = 'YES' THEN 1 ELSE 0 END) AS yes_total,
+                SUM(CASE WHEN direction = 'NO' THEN 1 ELSE 0 END) AS no_total,
+                AVG(CASE WHEN realized_outcome IS NOT NULL THEN edge END) AS avg_edge_resolved,
+                AVG(CASE WHEN realized_outcome IS NOT NULL THEN confidence END) AS avg_confidence_resolved,
+                AVG(CASE WHEN realized_outcome IS NULL THEN edge END) AS avg_edge_pending,
+                SUM(
+                    CASE
+                        WHEN realized_outcome IS NOT NULL
+                             AND (market_prob <= 0.0 OR market_prob >= 1.0) THEN 1
+                        ELSE 0
+                    END
+                ) AS extreme_price_resolved
+            FROM shadow_calibration
+            WHERE direction IN ('YES', 'NO')
+            """
+        ).fetchone()
+
+        resolution_row = connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN realized_outcome IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
+                SUM(
+                    CASE
+                        WHEN realized_outcome IS NULL
+                             AND COALESCE(resolution_status, '') = 'missing' THEN 1
+                        ELSE 0
+                    END
+                ) AS missing_unresolvable,
+                SUM(
+                    CASE
+                        WHEN realized_outcome IS NULL
+                             AND COALESCE(resolution_status, '') != 'missing' THEN 1
+                        ELSE 0
+                    END
+                ) AS pending_open_or_unknown
+            FROM shadow_calibration
+            """
+        ).fetchone()
+
+        pending_ts_rows = connection.execute(
+            """
+            SELECT timestamp, direction, resolution_status
+            FROM shadow_calibration
+            WHERE realized_outcome IS NULL
+            """
+        ).fetchall()
+
+        resolved_trade_rows = connection.execute(
+            """
+            SELECT direction, edge, confidence, market_prob, model_prob, blended_prob, realized_outcome
+            FROM shadow_calibration
+            WHERE realized_outcome IS NOT NULL
+              AND direction IN ('YES', 'NO')
+            """
+        ).fetchall()
+
+        prefix_rows = connection.execute(
+            """
+            SELECT ticker, COUNT(1) AS n
+            FROM shadow_calibration
+            GROUP BY ticker
+            """
+        ).fetchall()
+
+        ts_range = connection.execute(
+            """
+            SELECT MIN(timestamp) AS min_ts, MAX(timestamp) AS max_ts
+            FROM shadow_calibration
+            """
+        ).fetchone()
+
+    # Accuracy block
+    n_resolved = int(accuracy_row["n"] or 0) if accuracy_row else 0
+    market_brier = float(accuracy_row["market_brier"]) if accuracy_row and accuracy_row["market_brier"] is not None else None
+    model_brier = float(accuracy_row["model_brier"]) if accuracy_row and accuracy_row["model_brier"] is not None else None
+    blended_brier = float(accuracy_row["blended_brier"]) if accuracy_row and accuracy_row["blended_brier"] is not None else None
+    comparisons = {
+        "resolved_n": n_resolved,
+        "market_brier": market_brier,
+        "model_brier": model_brier,
+        "blended_brier": blended_brier,
+        "market_mae": float(accuracy_row["market_mae"]) if accuracy_row and accuracy_row["market_mae"] is not None else None,
+        "model_mae": float(accuracy_row["model_mae"]) if accuracy_row and accuracy_row["model_mae"] is not None else None,
+        "blended_mae": float(accuracy_row["blended_mae"]) if accuracy_row and accuracy_row["blended_mae"] is not None else None,
+        "model_closer_count": int(accuracy_row["model_closer"] or 0) if accuracy_row else 0,
+        "market_closer_count": int(accuracy_row["market_closer"] or 0) if accuracy_row else 0,
+        "tie_closer_count": int(accuracy_row["tie_closer"] or 0) if accuracy_row else 0,
+        "model_beats_market_brier": (
+            model_brier is not None and market_brier is not None and model_brier < market_brier
+        ),
+        "blend_beats_market_brier": (
+            blended_brier is not None and market_brier is not None and blended_brier < market_brier
+        ),
+    }
+
+    # Trade-signal performance
+    hits = 0
+    resolved_trades = 0
+    pnl_pre_sum = 0.0
+    pnl_post_sum = 0.0
+    extreme_resolved = 0
+    edge_buckets: dict[str, dict[str, Any]] = {
+        "lt_0.08": {"samples": 0, "hits": 0, "pnl_pre_fees_sum": 0.0},
+        "0.08_0.12": {"samples": 0, "hits": 0, "pnl_pre_fees_sum": 0.0},
+        "0.12_0.18": {"samples": 0, "hits": 0, "pnl_pre_fees_sum": 0.0},
+        "0.18_0.25": {"samples": 0, "hits": 0, "pnl_pre_fees_sum": 0.0},
+        "ge_0.25": {"samples": 0, "hits": 0, "pnl_pre_fees_sum": 0.0},
+    }
+    conf_buckets: dict[str, dict[str, Any]] = {
+        "lt_0.55": {"samples": 0, "hits": 0},
+        "0.55_0.65": {"samples": 0, "hits": 0},
+        "0.65_0.75": {"samples": 0, "hits": 0},
+        "0.75_0.85": {"samples": 0, "hits": 0},
+        "ge_0.85": {"samples": 0, "hits": 0},
+    }
+
+    for row in resolved_trade_rows:
+        direction = str(row["direction"] or "").upper()
+        market_prob = float(row["market_prob"])
+        realized = float(row["realized_outcome"])
+        edge = float(row["edge"] or 0.0)
+        confidence = float(row["confidence"] or 0.0)
+        hit = _directional_hit(direction, realized)
+        pnl_pre = _unit_pnl(direction, market_prob, realized, cost=0.0)
+        pnl_post = _unit_pnl(direction, market_prob, realized, cost=costs)
+        if hit is None or pnl_pre is None or pnl_post is None:
+            continue
+
+        resolved_trades += 1
+        hits += int(hit)
+        pnl_pre_sum += pnl_pre
+        pnl_post_sum += pnl_post
+        if market_prob <= 0.0 or market_prob >= 1.0:
+            extreme_resolved += 1
+
+        if edge < 0.08:
+            eb = "lt_0.08"
+        elif edge < 0.12:
+            eb = "0.08_0.12"
+        elif edge < 0.18:
+            eb = "0.12_0.18"
+        elif edge < 0.25:
+            eb = "0.18_0.25"
+        else:
+            eb = "ge_0.25"
+        edge_buckets[eb]["samples"] += 1
+        edge_buckets[eb]["hits"] += int(hit)
+        edge_buckets[eb]["pnl_pre_fees_sum"] += pnl_pre
+
+        if confidence < 0.55:
+            cb = "lt_0.55"
+        elif confidence < 0.65:
+            cb = "0.55_0.65"
+        elif confidence < 0.75:
+            cb = "0.65_0.75"
+        elif confidence < 0.85:
+            cb = "0.75_0.85"
+        else:
+            cb = "ge_0.85"
+        conf_buckets[cb]["samples"] += 1
+        conf_buckets[cb]["hits"] += int(hit)
+
+    edge_bucket_list = []
+    for name, payload in edge_buckets.items():
+        samples = int(payload["samples"])
+        edge_bucket_list.append(
+            {
+                "bucket": name,
+                "samples": samples,
+                "hit_rate": _safe_div(float(payload["hits"]), float(samples)),
+                "avg_unit_pnl_pre_fees": _safe_div(float(payload["pnl_pre_fees_sum"]), float(samples)),
+            }
+        )
+
+    conf_bucket_list = []
+    for name, payload in conf_buckets.items():
+        samples = int(payload["samples"])
+        conf_bucket_list.append(
+            {
+                "bucket": name,
+                "samples": samples,
+                "hit_rate": _safe_div(float(payload["hits"]), float(samples)),
+            }
+        )
+
+    signals_total = int(trade_agg["signals_total"] or 0) if trade_agg else 0
+    signals_pending = int(trade_agg["signals_pending"] or 0) if trade_agg else 0
+    signals_resolved = int(trade_agg["signals_resolved"] or 0) if trade_agg else 0
+
+    trade_signals = {
+        "signals_total": signals_total,
+        "signals_pending": signals_pending,
+        "signals_resolved": signals_resolved,
+        "yes_total": int(trade_agg["yes_total"] or 0) if trade_agg else 0,
+        "no_total": int(trade_agg["no_total"] or 0) if trade_agg else 0,
+        "hit_rate": _safe_div(float(hits), float(resolved_trades)),
+        "hits": hits,
+        "avg_edge_resolved": float(trade_agg["avg_edge_resolved"]) if trade_agg and trade_agg["avg_edge_resolved"] is not None else None,
+        "avg_confidence_resolved": (
+            float(trade_agg["avg_confidence_resolved"])
+            if trade_agg and trade_agg["avg_confidence_resolved"] is not None
+            else None
+        ),
+        "avg_unit_pnl_pre_fees": _safe_div(pnl_pre_sum, float(resolved_trades)),
+        "avg_unit_pnl_after_costs": _safe_div(pnl_post_sum, float(resolved_trades)),
+        "total_unit_pnl_pre_fees": pnl_pre_sum if resolved_trades else 0.0,
+        "total_unit_pnl_after_costs": pnl_post_sum if resolved_trades else 0.0,
+        "trading_costs_assumed": costs,
+        "extreme_price_resolved": extreme_resolved,
+        "extreme_price_resolved_frac": _safe_div(float(extreme_resolved), float(resolved_trades)),
+        "note": (
+            "Unit PnL assumes entry at recorded market_prob (YES price). "
+            "Rows with market_prob at 0 or 1 often inflate paper PnL and are not reliable executable quotes."
+        ),
+        "edge_buckets": edge_bucket_list,
+        "confidence_buckets": conf_bucket_list,
+    }
+
+    # Pending age + resolution gap
+    now = datetime.now(timezone.utc)
+    age_counts: dict[str, int] = {"<1d": 0, "1-6d": 0, "7-13d": 0, "14-29d": 0, "30d+": 0}
+    missing_age_counts: dict[str, int] = {"<1d": 0, "1-6d": 0, "7-13d": 0, "14-29d": 0, "30d+": 0}
+    trade_pending_age_counts: dict[str, int] = {"<1d": 0, "1-6d": 0, "7-13d": 0, "14-29d": 0, "30d+": 0}
+    oldest_pending_days: Optional[float] = None
+    newest_pending_days: Optional[float] = None
+    unparsed_ts = 0
+
+    for row in pending_ts_rows:
+        dt = _parse_iso_timestamp(row["timestamp"])
+        if dt is None:
+            unparsed_ts += 1
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        days = max(0.0, (now - dt.astimezone(timezone.utc)).total_seconds() / 86400.0)
+        bucket = _age_bucket_days(days)
+        age_counts[bucket] = age_counts.get(bucket, 0) + 1
+        if str(row["resolution_status"] or "") == "missing":
+            missing_age_counts[bucket] = missing_age_counts.get(bucket, 0) + 1
+        side = str(row["direction"] or "").upper()
+        if side in {"YES", "NO"} and str(row["resolution_status"] or "") != "missing":
+            trade_pending_age_counts[bucket] = trade_pending_age_counts.get(bucket, 0) + 1
+        oldest_pending_days = days if oldest_pending_days is None else max(oldest_pending_days, days)
+        newest_pending_days = days if newest_pending_days is None else min(newest_pending_days, days)
+
+    missing_unresolvable = int(resolution_row["missing_unresolvable"] or 0) if resolution_row else 0
+    pending_open_or_unknown = int(resolution_row["pending_open_or_unknown"] or 0) if resolution_row else 0
+
+    resolution = {
+        "resolved": int(resolution_row["resolved"] or 0) if resolution_row else 0,
+        "pending_open_or_unknown": pending_open_or_unknown,
+        "missing_unresolvable": missing_unresolvable,
+        "pending_age_buckets": age_counts,
+        "missing_age_buckets": missing_age_counts,
+        "trade_signal_pending_age_buckets": trade_pending_age_counts,
+        "oldest_pending_days": oldest_pending_days,
+        "newest_pending_days": newest_pending_days,
+        "unparsed_pending_timestamps": unparsed_ts,
+        "backfill_gap_note": (
+            "If --backfill-outcomes is delayed, Kalshi may 404 delisted markets and those rows can never "
+            "receive realized_outcome. Re-run backfill regularly; missing markets are marked "
+            "resolution_status='missing' so they no longer look like open pending work."
+        ),
+    }
+
+    # Universe composition
+    prefix_counts: dict[str, int] = {}
+    for row in prefix_rows:
+        prefix = _ticker_prefix(str(row["ticker"]))
+        prefix_counts[prefix] = prefix_counts.get(prefix, 0) + int(row["n"] or 0)
+    top_prefixes = [
+        {"prefix": prefix, "rows": count}
+        for prefix, count in sorted(prefix_counts.items(), key=lambda item: item[1], reverse=True)[:12]
+    ]
+
+    # Verdict / traffic lights
+    notes: list[str] = []
+    lights: dict[str, str] = {}
+
+    if summary["rows_total"] >= 100:
+        lights["pipeline"] = "green"
+        notes.append("Shadow logging has meaningful volume.")
+    elif summary["rows_total"] > 0:
+        lights["pipeline"] = "yellow"
+        notes.append("Some shadow rows exist, but sample is still small.")
+    else:
+        lights["pipeline"] = "red"
+        notes.append("No shadow calibration rows found.")
+
+    if signals_resolved >= 100:
+        lights["trade_sample"] = "green"
+    elif signals_resolved >= 30:
+        lights["trade_sample"] = "yellow"
+        notes.append(
+            f"Only {signals_resolved} resolved trade signals; treat hit-rate/PnL as provisional."
+        )
+    else:
+        lights["trade_sample"] = "red"
+        notes.append(
+            f"Only {signals_resolved} resolved trade signals — far too few to trust strategy metrics."
+        )
+
+    if comparisons["model_beats_market_brier"]:
+        lights["model_vs_market"] = "green"
+        notes.append("Model Brier beats market on resolved rows.")
+    elif comparisons["blend_beats_market_brier"]:
+        lights["model_vs_market"] = "yellow"
+        notes.append("Blend slightly beats market Brier, but raw model does not — keep model weight conservative.")
+    elif n_resolved > 0:
+        lights["model_vs_market"] = "red"
+        notes.append("Model/blend do not clearly beat market Brier; do not size up.")
+    else:
+        lights["model_vs_market"] = "red"
+        notes.append("No resolved rows for model-vs-market comparison.")
+
+    extreme_frac = trade_signals["extreme_price_resolved_frac"] or 0.0
+    if resolved_trades == 0:
+        lights["price_quality"] = "red"
+    elif extreme_frac >= 0.5:
+        lights["price_quality"] = "red"
+        notes.append(
+            f"{extreme_resolved}/{resolved_trades} resolved trade signals used market_prob at 0 or 1; "
+            "paper PnL is not trustworthy."
+        )
+    elif extreme_frac > 0:
+        lights["price_quality"] = "yellow"
+        notes.append("Some resolved trade signals used extreme market prices (0 or 1).")
+    else:
+        lights["price_quality"] = "green"
+
+    if missing_unresolvable > 0:
+        lights["backfill_gap"] = "yellow"
+        notes.append(
+            f"{missing_unresolvable} rows marked missing/unresolvable after Kalshi 404 — "
+            "likely lost because backfill ran too late. Run --backfill-outcomes more often."
+        )
+    elif pending_open_or_unknown > summary["rows_total"] * 0.8 and summary["rows_total"] > 0:
+        lights["backfill_gap"] = "yellow"
+        notes.append(
+            "Most rows are still pending outcomes. Run --backfill-outcomes regularly so settled "
+            "markets are captured before Kalshi delists them."
+        )
+    else:
+        lights["backfill_gap"] = "green"
+
+    hit_rate = trade_signals["hit_rate"]
+    if hit_rate is None:
+        lights["trade_edge"] = "red"
+    elif hit_rate >= 0.55 and extreme_frac < 0.25 and signals_resolved >= 30:
+        lights["trade_edge"] = "green"
+    elif signals_resolved < 30:
+        lights["trade_edge"] = "yellow"
+        notes.append("Trade-edge light is provisional until more signals resolve.")
+    else:
+        lights["trade_edge"] = "red"
+        notes.append(
+            f"Resolved trade hit rate is {hit_rate:.1%}; filters are not yet showing reliable directional edge."
+        )
+
+    ready_for_live = all(
+        lights.get(key) == "green"
+        for key in ("pipeline", "trade_sample", "model_vs_market", "price_quality", "trade_edge")
+    )
+    if summary.get("orders_submitted", 0):
+        notes.append("Live orders already present in executed_orders; keep monitoring failures.")
+    else:
+        notes.append("orders_total=0 — still fully shadow mode (appropriate until lights are green).")
+
+    if not ready_for_live:
+        notes.append("Verdict: stay in SHADOW_MODE; do not enable live sizing yet.")
+    else:
+        notes.append("Verdict: metrics look strong enough to consider a tiny live pilot.")
+
+    report = {
+        "db_path": summary["db_path"],
+        "generated_at": now.isoformat(),
+        "data_range": {
+            "min_timestamp": ts_range["min_ts"] if ts_range else None,
+            "max_timestamp": ts_range["max_ts"] if ts_range else None,
+        },
+        "overview": {
+            "rows_total": summary["rows_total"],
+            "rows_pending": summary["rows_pending"],
+            "rows_resolved": summary["rows_resolved"],
+            "rows_missing": summary.get("rows_missing", 0),
+            "avg_edge_all_rows": summary["avg_edge"],
+            "avg_confidence_all_rows": summary["avg_confidence"],
+            "yes_signals": summary["yes_signals"],
+            "no_signals": summary["no_signals"],
+            "no_trade_signals": summary["no_trade_signals"],
+            "orders_total": summary["orders_total"],
+            "orders_submitted": summary["orders_submitted"],
+            "orders_failed": summary["orders_failed"],
+            "note": (
+                "avg_edge_all_rows / avg_confidence_all_rows include no-trade rows (often edge=0), "
+                "so they understate signal-only averages. rows_missing are API-delisted markets that "
+                "can no longer be settled via backfill."
+            ),
+        },
+        "comparisons": comparisons,
+        "calibration_bins": summary["calibration_bins"],
+        "trade_signals": trade_signals,
+        "resolution": resolution,
+        "universe": {"top_ticker_prefixes": top_prefixes},
+        "verdict": {
+            "ready_for_live": ready_for_live,
+            "lights": lights,
+            "notes": notes,
+        },
+    }
+    return report
 
 
 def get_recent_executed_orders(limit: int = 20, db_path: Optional[str] = None) -> dict[str, Any]:
@@ -1114,11 +1682,39 @@ def _write_shadow_calibration_csv(rows: list[dict], csv_path: Path) -> None:
 
 
 def _parse_kalshi_market_result(market_payload: dict) -> Optional[bool]:
-    result = str(market_payload.get("result", "")).strip().lower()
-    if result == "yes":
-        return True
-    if result == "no":
-        return False
+    """
+    Parse Kalshi settlement into YES=True / NO=False.
+
+    Prefers explicit result fields; also accepts common settlement dollar values
+    when status indicates the market is finalized/determined.
+    """
+    if not isinstance(market_payload, dict):
+        return None
+
+    for key in ("result", "settlement_result", "market_result"):
+        result = str(market_payload.get(key, "")).strip().lower()
+        if result in {"yes", "y", "true", "1"}:
+            return True
+        if result in {"no", "n", "false", "0"}:
+            return False
+
+    status = str(market_payload.get("status", "")).strip().lower()
+    settled_statuses = {"finalized", "determined", "settled", "closed"}
+    if status in settled_statuses:
+        # settlement_value_dollars is typically 1.0000 for YES, 0.0000 for NO.
+        for key in ("settlement_value_dollars", "settlement_value", "yes_settlement"):
+            raw = market_payload.get(key)
+            if raw is None or raw == "":
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value >= 0.999:
+                return True
+            if value <= 0.001:
+                return False
+
     return None
 
 
@@ -1180,16 +1776,20 @@ def backfill_shadow_realized_outcomes(
     jsonl_path: Optional[str] = None,
     csv_path: Optional[str] = None,
     dry_run: bool = False,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """
     Backfill realized_outcome for shadow rows whose markets have settled on Kalshi.
 
     realized_outcome is True when the market settled YES, False when it settled NO,
     and remains null while the market is still open or undetermined.
+
+    Markets that 404 / cannot be found are marked resolution_status='missing' so a delayed
+    backfill gap is visible in --shadow-report instead of looking like forever-open pending.
     """
     jsonl_file = Path(jsonl_path or SHADOW_LOG_JSONL)
     csv_file = Path(csv_path or SHADOW_LOG_CSV)
     db_file = Path(SHADOW_DB_PATH)
+    init_shadow_db(str(db_file))
     rows = load_shadow_calibration_log(str(jsonl_file), db_path=str(db_file))
     if not rows:
         logging.info("No shadow calibration rows found at %s", jsonl_file)
@@ -1197,16 +1797,45 @@ def backfill_shadow_realized_outcomes(
             "rows_total": 0,
             "rows_pending": 0,
             "rows_updated": 0,
+            "rows_marked_missing": 0,
             "tickers_checked": 0,
             "tickers_settled": 0,
             "tickers_unsettled": 0,
             "tickers_missing": 0,
+            "sample_missing_tickers": [],
+            "note": "No shadow rows to backfill.",
         }
 
-    pending_rows = [row for row in rows if row.get("realized_outcome") is None]
-    pending_tickers = sorted({str(row.get("ticker", "")).strip() for row in pending_rows if row.get("ticker")})
+    # Skip rows already known missing unless they somehow gained an outcome.
+    pending_rows = [
+        row
+        for row in rows
+        if row.get("realized_outcome") is None
+        and str(row.get("resolution_status") or "") != "missing"
+    ]
+    # Also include DB-only resolution_status awareness via pending tickers from DB.
+    with _connect_shadow_db(str(db_file)) as connection:
+        db_pending = connection.execute(
+            """
+            SELECT DISTINCT ticker
+            FROM shadow_calibration
+            WHERE realized_outcome IS NULL
+              AND COALESCE(resolution_status, '') != 'missing'
+              AND ticker IS NOT NULL
+              AND TRIM(ticker) != ''
+            """
+        ).fetchall()
+    pending_tickers = sorted(
+        {
+            str(row.get("ticker", "")).strip()
+            for row in pending_rows
+            if row.get("ticker")
+        }
+        | {str(r["ticker"]).strip() for r in db_pending if r["ticker"]}
+    )
 
     outcome_by_ticker: dict[str, Optional[bool]] = {}
+    missing_tickers: list[str] = []
     tickers_settled = 0
     tickers_unsettled = 0
     tickers_missing = 0
@@ -1215,7 +1844,10 @@ def backfill_shadow_realized_outcomes(
         market_payload = fetch_kalshi_market(ticker, client=client)
         if market_payload is None:
             outcome_by_ticker[ticker] = None
+            missing_tickers.append(ticker)
             tickers_missing += 1
+            if KALSHI_BACKFILL_SLEEP_SEC > 0:
+                time.sleep(KALSHI_BACKFILL_SLEEP_SEC)
             continue
 
         realized = _parse_kalshi_market_result(market_payload)
@@ -1237,9 +1869,11 @@ def backfill_shadow_realized_outcomes(
         if realized is None:
             continue
         row["realized_outcome"] = realized
+        row["resolution_status"] = "settled"
         rows_updated += 1
 
-    if rows_updated and not dry_run:
+    rows_marked_missing = 0
+    if not dry_run:
         with _connect_shadow_db(str(db_file)) as connection:
             for ticker, realized in outcome_by_ticker.items():
                 if realized is None:
@@ -1247,12 +1881,34 @@ def backfill_shadow_realized_outcomes(
                 connection.execute(
                     """
                     UPDATE shadow_calibration
-                    SET realized_outcome = ?
+                    SET realized_outcome = ?,
+                        resolution_status = 'settled'
                     WHERE ticker = ?
                       AND realized_outcome IS NULL
                     """,
                     (_bool_to_db(realized), ticker),
                 )
+            for ticker in missing_tickers:
+                cursor = connection.execute(
+                    """
+                    UPDATE shadow_calibration
+                    SET resolution_status = 'missing'
+                    WHERE ticker = ?
+                      AND realized_outcome IS NULL
+                      AND COALESCE(resolution_status, '') != 'missing'
+                    """,
+                    (ticker,),
+                )
+                rows_marked_missing += int(cursor.rowcount or 0)
+    else:
+        # Dry-run estimate: how many pending rows would be marked missing.
+        missing_set = set(missing_tickers)
+        rows_marked_missing = sum(
+            1
+            for row in rows
+            if row.get("realized_outcome") is None
+            and str(row.get("ticker", "")).strip() in missing_set
+        )
 
     if rows_updated and not dry_run:
         _write_shadow_calibration_jsonl(rows, jsonl_file)
@@ -1273,14 +1929,31 @@ def backfill_shadow_realized_outcomes(
     else:
         logging.info("No settled outcomes available yet for pending shadow rows.")
 
+    if tickers_missing:
+        logging.warning(
+            "Backfill could not find %s tickers on Kalshi (likely delisted). "
+            "Marked/would mark missing rows=%s. Run backfill more often to reduce this gap.",
+            tickers_missing,
+            rows_marked_missing,
+        )
+
+    sample_missing = missing_tickers[:15]
     return {
         "rows_total": len(rows),
         "rows_pending": len(pending_rows),
         "rows_updated": rows_updated,
+        "rows_marked_missing": rows_marked_missing,
         "tickers_checked": len(pending_tickers),
         "tickers_settled": tickers_settled,
         "tickers_unsettled": tickers_unsettled,
         "tickers_missing": tickers_missing,
+        "sample_missing_tickers": sample_missing,
+        "dry_run": dry_run,
+        "note": (
+            "tickers_missing are API 404/not-found. Those outcomes are usually unrecoverable "
+            "if Kalshi has delisted the market. Prefer running --backfill-outcomes on a schedule "
+            "(e.g. daily) while markets are still queryable."
+        ),
     }
 
 
@@ -1443,13 +2116,28 @@ def get_kalshi_balance(client: Any) -> float:
 
 def grok_estimate_probability(event_description: str) -> Optional[dict]:
     """Use Grok API for calibrated prob + reasoning."""
+    if _shutdown_event.is_set():
+        return None
+    
     try:
         content = _call_grok_chat(event_description, strict=False)
+        if _shutdown_event.is_set():
+            return None
+        
         parsed = _parse_grok_probability_response(content or "")
 
         if not parsed:
             logging.warning("Grok response was not valid JSON; retrying once with strict prompt.")
-            strict_content = _call_grok_chat(event_description, strict=True)
+            if not _shutdown_event.is_set():
+                strict_content = _call_grok_chat(event_description, strict=True)
+            else:
+                strict_content = None
+            
+            if not strict_content:
+                if _shutdown_event.is_set():
+                    return None
+                logging.warning("Strict Grok retry still returned invalid JSON; skipping event.")
+                return None
             parsed = _parse_grok_probability_response(strict_content or "")
             if not parsed:
                 logging.warning("Strict Grok retry still returned invalid JSON; skipping event.")
@@ -1567,6 +2255,12 @@ def main_loop(run_once: bool = False, diagnostics: bool = LOOP_DIAGNOSTICS):
 
                     stats["grok_attempted"] += 1
                     grok_data = grok_estimate_probability(desc)
+                    
+                    # Check for shutdown request after expensive API call
+                    if _shutdown_event.is_set():
+                        logging.info("Shutdown requested; exiting market processing loop.")
+                        break
+                    
                     if not grok_data:
                         stats["grok_failed"] += 1
                         if SHADOW_MODE and SHADOW_LOG_ON_GROK_FAILURE:
@@ -1742,7 +2436,15 @@ def _parse_cli():
     parser.add_argument(
         "--shadow-summary",
         action="store_true",
-        help="Print SQLite shadow calibration summary metrics as JSON.",
+        help="Print lightweight SQLite shadow calibration summary metrics as JSON.",
+    )
+    parser.add_argument(
+        "--shadow-report",
+        action="store_true",
+        help=(
+            "Print detailed shadow performance report as JSON "
+            "(model-vs-market, trade-signal PnL, pending ages, verdict lights)."
+        ),
     )
     parser.add_argument(
         "--orders-recent",
@@ -1777,6 +2479,9 @@ if __name__ == "__main__":
     args = _parse_cli()
     if args.backfill_outcomes:
         stats = backfill_shadow_realized_outcomes(dry_run=args.dry_run)
+        print(json.dumps(stats, indent=2))
+    elif args.shadow_report:
+        stats = get_shadow_report()
         print(json.dumps(stats, indent=2))
     elif args.shadow_summary:
         stats = get_shadow_summary()
