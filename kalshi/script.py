@@ -54,7 +54,7 @@ KALSHI_KEY_ID = os.getenv("KALSHI_KEY_ID")
 KALSHI_PRIVATE_KEY = os.getenv("KALSHI_PRIVATE_KEY")
 KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH")
 GROK_API_KEY = os.getenv("GROK_API_KEY")  # or xAI client
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-4")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-4.6")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -485,6 +485,8 @@ def _call_grok_chat(event_description: str, strict: bool = False) -> Optional[st
     
     payload = {
         "model": GROK_MODEL,
+        "reasoning_effort": "high",
+        "stream": True,
         "messages": [{
             "role": "user",
             "content": _build_grok_prompt(event_description, strict=strict),
@@ -495,7 +497,7 @@ def _call_grok_chat(event_description: str, strict: bool = False) -> Optional[st
         "https://api.x.ai/v1/chat/completions",
         json=payload,
         headers=headers,
-        timeout=30,
+        timeout=3600,
     )
     resp.raise_for_status()
     data = resp.json()

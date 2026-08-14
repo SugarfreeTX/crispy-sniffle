@@ -66,10 +66,9 @@ def query_grok(packet: PacketDict, api_key: Optional[str] = None) -> Optional[Di
     prompt = build_grok_prompt(packet)
 
     body = {
-        "model": "grok-4-1-fast-reasoning-latest",  # or your preferred model
+        "model": "grok-4.6",  # or your preferred model
+        "reasoning": "high",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,  # low for consistent decisions
-        "max_tokens": 300
     }
 
     logger.info("Sending data packet to Grok for analysis...")

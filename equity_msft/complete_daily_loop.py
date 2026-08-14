@@ -190,7 +190,7 @@ def fetch_alpaca_cash_balance(api_key: str, secret_key: str) -> Optional[float]:
         "APCA-API-SECRET-KEY": secret_key
     }
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         data = response.json()
         cash = float(data.get("cash", 0.0))
@@ -811,14 +811,16 @@ Data packet:
 """
 
     body = {
-        "model": "grok-4.3",
+        "model": "grok-4.6",
+        "reasoning_effort": "high",
+        "stream": True,
         "messages": [
             {"role": "user", "content": prompt}
         ]
     }
 
     try:
-        response = requests.post(url, headers=headers, json=body, timeout=30)
+        response = requests.post(url, headers=headers, json=body, timeout=3600)
         logger.info(f"Response status code: {response.status_code}")
         logger.info(f"Response headers: {response.headers}")
         if response.status_code == 403:
@@ -1609,6 +1611,7 @@ def main(
         #     reason=reason if reason is not None else "",
         #     dry_run=dry_run
         # )
+        pass
     logger.info("=== Daily trading loop finished ===")
         
 if __name__ == "__main__":
