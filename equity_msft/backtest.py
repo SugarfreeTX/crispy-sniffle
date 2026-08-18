@@ -29,7 +29,7 @@ DEFAULT_OUTPUT_DIR = BASE_DIR / "backtest_outputs"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run deterministic MSFT backtest using backtesting.py")
     parser.add_argument("--symbol", default="MSFT", help="Ticker symbol for data refresh mode")
-    parser.add_argument("--start", default="2020-01-01", help="Backtest start date (YYYY-MM-DD)")
+    parser.add_argument("--start", default="2018-01-01", help="Backtest start date (YYYY-MM-DD)")
     parser.add_argument("--end", default=datetime.now().strftime("%Y-%m-%d"), help="Backtest end date (YYYY-MM-DD)")
     parser.add_argument("--csv", default=str(DEFAULT_DATA_PATH), help="Path to cached OHLCV CSV")
     parser.add_argument("--refresh-data", action="store_true", help="Refresh cached CSV from Yahoo Finance")
