@@ -237,3 +237,6 @@ test_runs/
 crypto_xrp/xrp_vectorbt_best.py
 crypto_xrp/xrp_vectorbt_trend.py
 crypto_xrp/xrp_walkforward_results.csv
+
+# delete folder 
+delete/

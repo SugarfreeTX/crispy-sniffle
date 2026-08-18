@@ -1,0 +1,12 @@
+{
+  "proposal_source": "grok",
+  "max_iterations": 25,
+  "patience": 6,
+  "min_improvement": 0.02,
+  "max_drawdown_limit": 0.12,
+  "min_trades": 12,
+  "dd_penalty_weight": 1.5,
+  "holdout_start": "2025-01-01",
+  "log_jsonl_path": "equity_msft/research_loop/supervisor_runs_conservative.jsonl",
+  "best_json_path": "equity_msft/research_loop/best_config_conservative.json"
+}

@@ -1,0 +1,28 @@
+{
+  "csv_path": "/Users/khemra/dev/crispy-sniffle/equity_msft/data/msft_daily.csv",
+  "rows": 2010,
+  "metrics": {
+    "total_return": 0.22955588869605856,
+    "annualized_return": 0.026247287951725706,
+    "cagr": 0.026247287951725706,
+    "buy_hold_return": 4.671669904536254,
+    "sharpe": 0.5407587784107758,
+    "max_drawdown": 0.10242933378736228,
+    "win_rate": 0.45454545454545453,
+    "profit_factor": 1.443008047772295,
+    "num_trades": 132,
+    "equity_final": 122955.58886960585,
+    "equity_peak": 133284.36010538472,
+    "start": "2018-01-02 00:00:00",
+    "end": "2025-12-30 00:00:00",
+    "scored_window": false
+  },
+  "grok_eval": "Rules loaded. Ready for metrics.\n\n1. Structural Strengths\nControlled 10.24% max drawdown over 2018-01-02 to 2025-12-30, including known stress years, fits a capital-preservation mandate. Positive expectancy: profit factor 1.44 on 132 trades with 45.45% win rate implies winners larger than losers. Sharpe 0.54 is modest but positive. Equity finished 122,956 vs implied ~100k start; peak 133,284 shows the book did compound without a strategy-ending loss.\n\n2. Structural Weaknesses\nStrategy total return 23.0% vs buy_hold_return 467.2% is a large participation gap. CAGR 2.62% is thin for an 8-year MSFT window. Final equity sits ~7.8% below peak (133,284 \u2192 122,956), so some late giveback. Win rate below 50% means the book depends on payoff asymmetry, not hit rate. Trade count 132 over ~8 years is only ~16\u201317 trades/year \u2014 sparse, high cash-drag profile.\n\n3. Regime Vulnerabilities\nThe sample spans 2018 vol, 2020 crash/rebound, 2021 bull, 2022 bear, and 2023\u201325 mega-cap run. The 23% vs 467% gap implies the strategy sat out most of the secular uptrend. No regime-sliced metrics were provided, so it is uncertain whether losses cluster in 2022, whether the book was flat in 2023\u201325, or both. A long-only pullback/overbought design is structurally exposed to trend days that never tag RSI/volume triggers.\n\n4. Volatility-Specific Behavior\nNo high-vol vs low-vol split was provided; behavior must be inferred only from the full-sample 10.24% DD and the existence of `min_atr`. Drawdown stayed contained, which is consistent with either ATR gating or reduced exposure in stress, but that is an inference, not a measured result. Cannot say whether the 2.62% CAGR is earned in quiet grind, crash rebounds, or both.\n\n5. Risk Model Evaluation\nMax drawdown 10.24% supports the capital-preservation brief; cash drag is acceptable under that mandate. Sharpe 0.54 is weak compensation for the opportunity cost versus buy-and-hold, but it is consistent with a low-utilization long-only book. Peak-to-final giveback shows the risk model did not lock the 133,284 high. 132 trades give the 1.44 PF some weight, not a tiny-sample artifact, but still not a large sample.\n\n6. Edge Concentration\nNo trade-tag, setup, or year breakdown was provided. Edge cannot be assigned to pullback buys, extreme setups, bearish-regime entries, or take-profits. Uncertainty is explicit: 132 mixed trades could be a few large winners plus many scratches, or a stable 1.44 PF across setups. Do not assume concentration.\n\n7. Failure Modes\nPrimary failure is non-participation in extended MSFT advances (return gap vs buy-and-hold). Secondary: sub-50% win rate plus sparse trading can grind if payoff asymmetry shrinks. Tertiary: unfinished giveback from 133,284 to 122,956 \u2014 a late losing cluster or over-tight exits into strength. If price trends without hitting `buy_pullback_rsi` / extreme / bearish knobs, the book stays in cash by design.\n\n8. Recommended Next Experiments\n- Raise `buy_pullback_rsi` one step to allow shallower pullback entries and test whether CAGR rises without pushing max DD much above 10%.\n- Raise `sell_overbought_rsi` and/or `bullish_hold_rsi` to hold winners longer in trends; compare return vs DD vs the 467% buy-hold gap.\n- Ease `take_profit_pnl_pct` or raise `take_profit_rsi` to cut less of the right tail; watch profit factor and peak-to-final giveback.\n- Lower `min_atr` slightly to see if trade count rises above 132 without inflating the 10.24% DD.\n- Tighten `extreme_setup_rsi` / `extreme_setup_rel_vol` as a quality filter if the looser-entry tests add trades but hurt PF 1.44.\n- Widen `neutral_rsi_low`\u2013`neutral_rsi_high` or raise `neutral_rel_volume_max` only if the goal is more idle-cash deployment; reject if DD or Sharpe worsens.\n- Leave `bearish_entry_rsi`, `bearish_exit_rsi`, `sell_bearish_rsi` unchanged until a bear-window slice exists; do not tune them on this full-sample gap alone.",
+  "new_params": {
+    "buy_pullback_rsi": 50.0,
+    "min_atr": 3.0,
+    "bullish_hold_rsi": 65.0,
+    "sell_overbought_rsi": 90.0,
+    "take_profit_pnl_pct": 9.0
+  }
+}
