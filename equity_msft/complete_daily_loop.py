@@ -813,7 +813,6 @@ Data packet:
     body = {
         "model": "grok-4.6",
         "reasoning_effort": "high",
-        "stream": True,
         "messages": [
             {"role": "user", "content": prompt}
         ]
