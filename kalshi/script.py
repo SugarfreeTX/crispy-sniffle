@@ -482,26 +482,58 @@ def _call_grok_chat(event_description: str, strict: bool = False) -> Optional[st
     if _shutdown_event.is_set():
         logging.info("Grok API call skipped: shutdown requested.")
         return None
-    
+
+    if not GROK_API_KEY:
+        raise RuntimeError("GROK_API_KEY is not set; cannot call Grok.")
+
+    # Non-streaming JSON response — this caller expects choices[0].message.content.
+    # stream=True returns SSE text and breaks resp.json().
     payload = {
         "model": GROK_MODEL,
-        "reasoning_effort": "high",
-        "stream": True,
         "messages": [{
             "role": "user",
             "content": _build_grok_prompt(event_description, strict=strict),
         }],
     }
-    headers = {"Authorization": f"Bearer {GROK_API_KEY}"}
+    # reasoning_effort is optional and model-dependent; only send when configured.
+    reasoning_effort = os.getenv("GROK_REASONING_EFFORT", "").strip()
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+
+    headers = {
+        "Authorization": f"Bearer {GROK_API_KEY}",
+        "Content-Type": "application/json",
+    }
     resp = requests.post(
         "https://api.x.ai/v1/chat/completions",
         json=payload,
         headers=headers,
-        timeout=3600,
+        timeout=_env_float("GROK_TIMEOUT_SEC", 120.0),
     )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    if resp.status_code >= 400:
+        body_preview = (resp.text or "").strip().replace("\n", " ")[:300]
+        raise RuntimeError(
+            f"Grok API HTTP {resp.status_code}: {body_preview or '<empty body>'}"
+        )
+
+    if not (resp.text or "").strip():
+        raise RuntimeError(
+            f"Grok API returned empty body (HTTP {resp.status_code}). "
+            "If stream=True was set previously, switch to non-streaming."
+        )
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        body_preview = (resp.text or "").strip().replace("\n", " ")[:300]
+        raise RuntimeError(
+            f"Grok API returned non-JSON body (HTTP {resp.status_code}): {body_preview}"
+        ) from exc
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected Grok response shape: {data!r}") from exc
 
 
 def _ensure_shadow_csv_header(path: Path) -> None:
@@ -2148,7 +2180,8 @@ def grok_estimate_probability(event_description: str) -> Optional[dict]:
 
         return parsed
     except Exception as exc:
-        logging.exception("Grok probability estimation failed: %s", exc)
+        # Expected path when API/key/network fails — keep shadow loop alive without traceback spam.
+        logging.error("Grok probability estimation failed: %s", exc)
         return None
 
 def calculate_edge(market_prob_yes: float, blended_prob_yes: float, fees=TRADING_FEES, slippage=SLIPPAGE):
