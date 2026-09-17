@@ -17,10 +17,16 @@ inflating (or otherwise distorting) results.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Dict
 
 import pandas as pd
 from backtesting import Backtest
+
+BASE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BASE_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from equity_msft.backtest import (  # noqa: F401 (re-exported for CLI parity)
     build_strategy_params,
@@ -34,7 +40,6 @@ from equity_msft.backtest import (  # noqa: F401 (re-exported for CLI parity)
 )
 from equity_msft.backtest_strategy import MSFTDailyBacktestStrategy
 
-BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = BASE_DIR / "backtest_outputs_next_open"
 
 
