@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,26 @@ GROK_API_URL = "https://api.x.ai/v1/chat/completions"
 GROK_RESPONSES_URL = "https://api.x.ai/v1/responses"
 DEFAULT_GROK_MODEL = os.getenv("GROK_MODEL", "grok-4.6")
 DEFAULT_GROK_PROPOSER_MODEL = os.getenv("GROK_PROPOSER_MODEL", "grok-4.20-multi-agent")
+
+# api.x.ai sits behind Cloudflare, which occasionally resets the TCP connection
+# before responding (RemoteDisconnected/ConnectionError) for non-browser TLS
+# clients like urllib3, even with valid credentials. Retrying succeeds almost
+# immediately, so we retry a few times with backoff instead of failing outright.
+_MAX_RETRIES = 4
+_BACKOFF_SECONDS = 2.0
+
+
+def _post_with_retries(url: str, *, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> requests.Response:
+    last_exc: requests.exceptions.ConnectionError | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return requests.post(url, headers=headers, json=payload, timeout=timeout)
+        except requests.exceptions.ConnectionError as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(_BACKOFF_SECONDS * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
 
 
 def build_grok_prompt(metrics: dict[str, Any]) -> str:
@@ -57,7 +78,7 @@ def grok_api_call(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    response = requests.post(GROK_API_URL, headers=headers, json=payload, timeout=timeout)
+    response = _post_with_retries(GROK_API_URL, headers=headers, payload=payload, timeout=timeout)
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
@@ -166,7 +187,7 @@ def grok_responses_api_call(
         "Authorization": f"Bearer {_xai_api_key()}",
         "Content-Type": "application/json",
     }
-    response = requests.post(GROK_RESPONSES_URL, headers=headers, json=payload, timeout=timeout)
+    response = _post_with_retries(GROK_RESPONSES_URL, headers=headers, payload=payload, timeout=timeout)
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
