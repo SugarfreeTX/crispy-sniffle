@@ -25,6 +25,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", type=str, default=None)
     parser.add_argument("--grok-preview-chars", type=int, default=500)
     parser.add_argument("--refresh-data", action="store_true")
+    parser.add_argument(
+        "--proposal-source",
+        choices=("grok", "codex"),
+        default="grok",
+        help="Parameter proposal engine after Grok evaluates the backtest",
+    )
     return parser.parse_args()
 
 
@@ -34,7 +40,7 @@ def main() -> None:
     data = load_data(csv_path, start=args.start, end=args.end, refresh_data=args.refresh_data)
     cfg = load_config_from_json(args.config_json)
 
-    new_params, metrics, grok_eval = research_iteration(data, cfg)
+    new_params, metrics, grok_eval = research_iteration(data, cfg, proposer=args.proposal_source)
 
     snapshot_keys = ["total_return", "annualized_return", "sharpe", "max_drawdown", "num_trades", "buy_hold_return"]
     metrics_snapshot: dict[str, Any] = {k: metrics.get(k) for k in snapshot_keys}
@@ -48,6 +54,7 @@ def main() -> None:
         grok_eval[: max(args.grok_preview_chars, 0)].replace("\n", " "),
     )
     print(f"new_params: {new_params}")
+    print(f"proposal_source: {args.proposal_source}")
 
     if args.output_json:
         out_path = Path(args.output_json)

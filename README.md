@@ -1,6 +1,71 @@
 # fantastic-spoon
 Grok bot msft
 
+## MSFT LLM Research Campaigns
+
+The original 2025 holdout has been inspected, so do not treat it as an
+unseen final test when refining the strategy. The following campaign presets
+use data through 2025 for research and reserve 2026 as the untouched holdout.
+Run each campaign independently: their logs and best-config artifacts are
+intentionally separate.
+
+Set credentials in the repository-root `.env` without committing that file:
+
+```bash
+# Required by both campaigns for the performance review.
+GROK_API_KEY=...
+
+# Required only by the Codex-proposer campaign.
+OPENAI_API_KEY=...
+```
+
+Create an isolated environment and verify the supervisor starts before making
+any API request:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m equity_msft.research_loop.run_supervisor_loop --help
+```
+
+Run one bounded API smoke test before a campaign. These commands write no
+research-loop artifact unless `--output-json` is supplied; `--refresh-data`
+updates the cached input CSV:
+
+```bash
+# Requires GROK_API_KEY.
+python -m equity_msft.research_loop.run_research_iteration \
+  --refresh-data \
+  --proposal-source grok
+
+# Requires GROK_API_KEY and OPENAI_API_KEY.
+python -m equity_msft.research_loop.run_research_iteration \
+  --refresh-data \
+  --proposal-source codex
+```
+
+Refresh the MSFT data before each campaign so the 2026 holdout is available:
+
+```bash
+# Grok reviews performance and proposes bounded parameter changes.
+python -m equity_msft.research_loop.run_supervisor_loop \
+  --refresh-data \
+  --supervisor-config-json equity_msft/research_loop/supervisor_config_grok_2025_research.json \
+  --output-json equity_msft/research_loop/supervisor_last_run_grok_2025_research.json
+
+# Grok reviews performance; Codex proposes bounded parameter changes.
+python -m equity_msft.research_loop.run_supervisor_loop \
+  --refresh-data \
+  --supervisor-config-json equity_msft/research_loop/supervisor_config_codex_2025_research.json \
+  --output-json equity_msft/research_loop/supervisor_last_run_codex_2025_research.json
+```
+
+Compare accepted candidates using their final 2026 `holdout_metrics`, then
+select at most one candidate. Do not use holdout results to make another
+parameter change; a changed candidate needs a new unseen holdout period.
+
 ## XRP Research Loop Supervisor
 
 Use the supervisor to run repeated backtest -> Grok -> Codex iterations with:
