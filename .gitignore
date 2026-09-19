@@ -147,6 +147,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+equity_msft/data/
+data/
+
 
 # Logs that contain API keys or credentials
 trade_history.json
