@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -26,19 +27,32 @@ DEFAULT_GROK_PROPOSER_MODEL = os.getenv("GROK_PROPOSER_MODEL", "grok-4.20-multi-
 # before responding (RemoteDisconnected/ConnectionError) for non-browser TLS
 # clients like urllib3, even with valid credentials. Retrying succeeds almost
 # immediately, so we retry a few times with backoff instead of failing outright.
-_MAX_RETRIES = 4
-_BACKOFF_SECONDS = 2.0
+_MAX_RETRIES = 8
+_BACKOFF_SECONDS = 3.0
+_MAX_BACKOFF_SECONDS = 60.0
+_RETRY_STATUS = {408, 429, 500, 502, 503, 504}
+_RETRY_EXC = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 
 def _post_with_retries(url: str, *, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> requests.Response:
-    last_exc: requests.exceptions.ConnectionError | None = None
+    last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
-            return requests.post(url, headers=headers, json=payload, timeout=timeout)
-        except requests.exceptions.ConnectionError as exc:
+            # Fresh session per attempt so a reset keep-alive connection is never reused.
+            with requests.Session() as session:
+                response = session.post(url, headers=headers, json=payload, timeout=timeout)
+            if response.status_code not in _RETRY_STATUS or attempt == _MAX_RETRIES - 1:
+                return response
+        except _RETRY_EXC as exc:
             last_exc = exc
-            if attempt < _MAX_RETRIES - 1:
-                time.sleep(_BACKOFF_SECONDS * (attempt + 1))
+            if attempt == _MAX_RETRIES - 1:
+                raise
+            print(f"[grok] {type(exc).__name__} on attempt {attempt + 1}/{_MAX_RETRIES}; retrying", file=sys.stderr, flush=True)
+        time.sleep(min(_BACKOFF_SECONDS * 2**attempt, _MAX_BACKOFF_SECONDS))
     assert last_exc is not None
     raise last_exc
 
@@ -54,7 +68,7 @@ def grok_api_call(
     prompt: str,
     *,
     model: str | None = None,
-    timeout: int = 3600,
+    timeout: int = 240,
 ) -> str:
     api_key = os.getenv("GROK_API_KEY")
     if not api_key:
@@ -171,7 +185,7 @@ def grok_responses_api_call(
     prompt: str,
     *,
     model: str | None = None,
-    timeout: int = 3600,
+    timeout: int = 240,
 ) -> str:
     """Call grok-4.20-multi-agent on the xAI Responses API."""
     payload = {
