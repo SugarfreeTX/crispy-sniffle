@@ -339,6 +339,19 @@ def has_executed_trade_today() -> bool:
         logger.warning(f"Unable to verify daily trade idempotency: {e}")
         return False
 
+
+def get_last_trade_record() -> Optional[Dict[str, Any]]:
+    """Return the most recently logged trade_history entry, or None if unavailable."""
+    try:
+        if not TRADE_HISTORY_FILE.exists():
+            return None
+        with open(TRADE_HISTORY_FILE, "r") as f:
+            trade_history = json.load(f)
+        return trade_history[-1] if trade_history else None
+    except Exception as e:
+        logger.warning(f"Unable to read last trade record: {e}")
+        return None
+
 def is_market_open() -> bool:
     """Check if NYSE is scheduled to trade today (year-safe weekend + holiday handling)."""
     now = datetime.now()
@@ -1577,6 +1590,19 @@ def main(
         # Step 3: Execute trade
         assert action is not None  # guaranteed: we returned early if grok_success was False
         success = execute_trade(action, reason, packet, ALPACA_API_KEY, ALPACA_SECRET_KEY, dry_run=dry_run, shadow_mode=shadow_mode)
+        # execute_trade may override the requested action internally (e.g. safety
+        # blocks downgrading BUY -> HOLD), so check the actual logged trade record
+        # rather than the Grok-requested `action` to decide whether to email.
+        if success and not dry_run and not shadow_mode:
+            last_trade = get_last_trade_record()
+            executed_action = str((last_trade or {}).get("action", "")).upper()
+            if executed_action in {"BUY", "SELL_PARTIAL", "SELL_FULL"}:
+                send_email_summary(
+                    packet=packet,
+                    action=executed_action,
+                    reason=reason if reason is not None else "",
+                    dry_run=dry_run,
+                )
         if packet is not None and not dry_run:
             updated_portfolio = load_portfolio_state()
             updated_portfolio["last_regime"] = packet["market_data"]["market_regime"]
@@ -1602,15 +1628,6 @@ def main(
     except Exception as e:
         # Use logger.exception to include the full traceback in logs for post-mortems.
         logger.exception("Unexpected error in main trading loop")
-    finally:
-        # Always send summary — even on error or early exit
-        # send_email_summary(
-        #     packet=packet,
-        #     action=action if action is not None else "SKIPPED/ERROR",
-        #     reason=reason if reason is not None else "",
-        #     dry_run=dry_run
-        # )
-        pass
     logger.info("=== Daily trading loop finished ===")
         
 if __name__ == "__main__":

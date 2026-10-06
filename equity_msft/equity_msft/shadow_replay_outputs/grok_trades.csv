@@ -1,0 +1,2 @@
+step,date,action,qty,price,realized_pnl,equity_after,reason
+14,2026-07-30,BUY,44,451.1,0.0,99961.94,Agrees with Bullish trend + valid size in Normal regime (RSI not extreme).
