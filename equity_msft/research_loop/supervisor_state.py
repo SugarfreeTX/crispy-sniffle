@@ -18,7 +18,14 @@ from equity_msft.research_loop.backtest_runner import (
     with_warmup,
 )
 from equity_msft.research_loop.optuna_proposer import propose_params_with_optuna
-from equity_msft.research_loop.pipeline import Config, config_from_dict, config_to_dict, research_iteration
+from equity_msft.research_loop.pipeline import (
+    Config,
+    config_from_dict,
+    config_to_dict,
+    apply_step_limits,
+    research_iteration,
+    summarize_history_for_prompt,
+)
 from equity_msft.research_loop.walk_forward_scorer import WalkForwardScoreSpec, WalkForwardSpec
 
 
@@ -38,12 +45,18 @@ class LoopState(Enum):
 @dataclass
 class SupervisorConfig:
     max_iterations: int = 20
-    patience: int = 5
+    patience: int = 8
     min_improvement: float = 0.01
     max_drawdown_limit: float = 0.12
     min_trades: int = 12
     dd_penalty_weight: float = 1.5
     proposal_source: str = "grok"
+
+    # Guardrails for LLM (grok/codex) proposals so a single iteration can't
+    # swing many knobs at once or jump too far from the incumbent.
+    max_param_step_fraction: float = 0.25
+    max_params_per_step: int = 4
+    history_window: int = 4
 
     optuna_trials_per_iteration: int = 15
     optuna_timeout_seconds: int | None = None
@@ -100,6 +113,9 @@ class SupervisorMemory:
     holdout_rows: int = 0
     holdout_metrics: dict[str, Any] = field(default_factory=dict)
     holdout_score: float | None = None
+
+    last_accept: bool = False
+    history: list[dict[str, Any]] = field(default_factory=list)
 
 
 def resolve_output_path(path_str: str) -> Path:
@@ -226,10 +242,19 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                     f"trials={proposal_metadata.get('trial_count')}"
                 )
             elif proposal_source in {"grok", "codex"}:
+                history_note = summarize_history_for_prompt(mem.history[-sup_cfg.history_window:])
                 new_params, _, grok_eval = research_iteration(
                     search_data,
                     mem.incumbent_cfg,
                     proposer=proposal_source,
+                    history_note=history_note,
+                )
+                incumbent_params = config_to_dict(mem.incumbent_cfg)
+                new_params = apply_step_limits(
+                    incumbent_params,
+                    new_params,
+                    max_step_fraction=sup_cfg.max_param_step_fraction,
+                    max_params_per_step=sup_cfg.max_params_per_step,
                 )
                 mem.proposed_params = new_params
                 mem.proposal_metadata = {"engine": proposal_source}
@@ -266,6 +291,7 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
             else:
                 mem.no_improve_streak += 1
 
+            mem.last_accept = accept
             mem.state = LoopState.UPDATE_BEST
 
         elif mem.state == LoopState.UPDATE_BEST:
@@ -294,6 +320,18 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                 "holdout_rows": mem.holdout_rows,
             }
             append_jsonl(log_path, row)
+
+            mem.history.append(
+                {
+                    "iteration": mem.iteration,
+                    "changed_params": mem.proposed_params,
+                    "accepted": mem.last_accept,
+                    "gate_pass": mem.candidate_eval.passed_hard_gate,
+                    "total_return": mem.candidate_eval.metrics.get("total_return", 0.0),
+                    "max_drawdown": mem.candidate_eval.metrics.get("max_drawdown", 0.0),
+                    "num_trades": mem.candidate_eval.metrics.get("num_trades", 0),
+                }
+            )
             mem.state = LoopState.CHECK_STOP
 
         elif mem.state == LoopState.CHECK_STOP:

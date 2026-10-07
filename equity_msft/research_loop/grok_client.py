@@ -177,8 +177,9 @@ def grok_responses_api_call(
     return _extract_responses_text(response.json())
 
 
-def refine_strategy_with_grok(current_params: dict, grok_feedback: str) -> dict[str, Any]:
+def refine_strategy_with_grok(current_params: dict, grok_feedback: str, history_note: str = "") -> dict[str, Any]:
     allowed = ", ".join(SEARCH_PARAM_KEYS)
+    history_block = f"\n{history_note}\n" if history_note else ""
     prompt = f"""
 You refine MSFT daily-strategy parameters.
 Return only a valid JSON object with updated keys and values.
@@ -186,6 +187,9 @@ Only use these keys: {allowed}
 Do not invent new keys. Do not change cash, commission, or risk-policy fields.
 Keep min_atr <= max_atr, neutral_rsi_low < neutral_rsi_high,
 and bearish_entry_rsi <= bearish_exit_rsi.
+Change at most 2-4 keys per proposal, with a small step relative to the
+current value (do not swing a knob from one end of its plausible range to
+the other in a single proposal).
 
 You are a strategy refinement model for a conservative MSFT daily long-only system.
 
@@ -194,7 +198,7 @@ Current parameters:
 
 Evaluation from Grok:
 {grok_feedback}
-
+{history_block}
 Propose a small, testable parameter update that addresses the weaknesses.
 Change only keys from this set: {allowed}
 Return ONLY a JSON object of the updated keys and values.

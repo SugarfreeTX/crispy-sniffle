@@ -24,6 +24,99 @@ SEARCH_PARAM_KEYS = (
     "neutral_rel_volume_max",
 )
 
+# Plausible (lo, hi) range for each search knob, used only to size how large a
+# single-iteration step is allowed to be (see apply_step_limits). These mirror
+# the Optuna search bounds in optuna_proposer.py where one exists; knobs Optuna
+# doesn't sweep (the neutral-band keys) get a comparably sized range so an LLM
+# proposer can't jump the whole band in one iteration.
+PARAM_STEP_RANGES: dict[str, tuple[float, float]] = {
+    "buy_pullback_rsi": (38.0, 54.0),
+    "sell_overbought_rsi": (74.0, 92.0),
+    "min_atr": (0.5, 5.0),
+    "extreme_setup_rsi": (20.0, 40.0),
+    "extreme_setup_rel_vol": (0.8, 1.5),
+    "bearish_entry_rsi": (18.0, 35.0),
+    "bearish_exit_rsi": (40.0, 60.0),
+    "bullish_hold_rsi": (52.0, 70.0),
+    "take_profit_pnl_pct": (5.0, 10.0),
+    "take_profit_rsi": (52.0, 70.0),
+    "sell_bearish_rsi": (45.0, 62.0),
+    "neutral_rsi_low": (30.0, 50.0),
+    "neutral_rsi_high": (50.0, 70.0),
+    "neutral_rel_volume_max": (1.0, 2.0),
+}
+
+
+def apply_step_limits(
+    incumbent_params: dict[str, Any],
+    proposed_params: dict[str, Any],
+    *,
+    max_step_fraction: float = 0.25,
+    max_params_per_step: int = 4,
+) -> dict[str, Any]:
+    """Bound a single proposal so it can't jump too far or move too many knobs at once.
+
+    1. Clamp each proposed value to within `max_step_fraction` of that knob's
+       full plausible range, measured from the current incumbent value.
+    2. If more than `max_params_per_step` keys changed, keep only the
+       `max_params_per_step` with the largest normalized (range-relative) delta
+       and drop the rest back to the incumbent value.
+    """
+    limited: dict[str, Any] = {}
+    deltas: list[tuple[str, float]] = []
+    for key, proposed_value in proposed_params.items():
+        if key not in incumbent_params:
+            limited[key] = proposed_value
+            continue
+        incumbent_value = incumbent_params[key]
+        bounds = PARAM_STEP_RANGES.get(key)
+        if bounds is None or not isinstance(proposed_value, (int, float)):
+            limited[key] = proposed_value
+            continue
+        lo, hi = bounds
+        span = hi - lo
+        max_delta = max_step_fraction * span
+        clamped = max(
+            float(incumbent_value) - max_delta,
+            min(float(incumbent_value) + max_delta, float(proposed_value)),
+        )
+        clamped = max(lo, min(hi, clamped))
+        limited[key] = clamped
+        normalized_delta = abs(clamped - float(incumbent_value)) / span if span else 0.0
+        if normalized_delta > 0:
+            deltas.append((key, normalized_delta))
+
+    if len(deltas) > max_params_per_step:
+        keep = {key for key, _ in sorted(deltas, key=lambda kv: kv[1], reverse=True)[:max_params_per_step]}
+        for key, _ in deltas:
+            if key not in keep:
+                limited[key] = incumbent_params[key]
+
+    return limited
+
+
+def summarize_history_for_prompt(history: list[dict[str, Any]]) -> str:
+    """Render recent accepted/rejected iterations as plain text for a proposer prompt."""
+    if not history:
+        return ""
+    lines = ["PRIOR ATTEMPTS THIS RUN (do not blindly repeat a rejected direction):"]
+    for entry in history:
+        outcome = "ACCEPTED" if entry.get("accepted") else (
+            "REJECTED (failed drawdown/trade-count gate)" if not entry.get("gate_pass", True) else "REJECTED (no improvement)"
+        )
+        changed = ", ".join(f"{k}={v}" for k, v in entry.get("changed_params", {}).items())
+        lines.append(
+            f"- iter {entry.get('iteration')}: changed [{changed}] -> {outcome}; "
+            f"total_return={entry.get('total_return'):.4f}, "
+            f"max_drawdown={entry.get('max_drawdown'):.4f}, "
+            f"num_trades={entry.get('num_trades')}"
+        )
+    lines.append(
+        "Prefer a different direction or smaller step than attempts marked REJECTED above. "
+        "Change as few keys as possible (ideally 2-4)."
+    )
+    return "\n".join(lines)
+
 
 @dataclass(frozen=True)
 class Config:
@@ -120,7 +213,7 @@ def load_config_from_json(path: str | Path | None, base_cfg: Config | None = Non
     return config_from_dict(load_json_object(path), base_cfg=base_cfg or Config())
 
 
-def research_iteration(data, cfg: Config, proposer: str = "grok"):
+def research_iteration(data, cfg: Config, proposer: str = "grok", history_note: str = ""):
     """One human-style cycle: backtest -> Grok review -> parameter proposal."""
     if __package__:
         from .backtest_runner import run_backtest_and_extract_metrics
@@ -147,7 +240,7 @@ def research_iteration(data, cfg: Config, proposer: str = "grok"):
 
     metrics = run_backtest_and_extract_metrics(data, cfg)
     grok_eval = evaluate_with_grok(metrics)
-    proposed_params = refine(config_to_dict(cfg), grok_eval)
+    proposed_params = refine(config_to_dict(cfg), grok_eval, history_note=history_note)
     if not isinstance(proposed_params, dict):
         raise TypeError(f"{refine.__name__} must return a dict of updated parameters")
 
