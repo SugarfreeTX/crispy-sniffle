@@ -104,8 +104,9 @@ def codex_api_call(
             raise RuntimeError(f"Unexpected OpenAI response shape: {data}") from exc
 
 
-def refine_strategy_with_codex(current_params: dict, grok_feedback: str) -> dict[str, Any]:
+def refine_strategy_with_codex(current_params: dict, grok_feedback: str, history_note: str = "") -> dict[str, Any]:
     allowed = ", ".join(SEARCH_PARAM_KEYS)
+    history_block = f"\n{history_note}\n" if history_note else ""
     prompt = f"""
 You are a strategy refinement model for a conservative MSFT daily long-only system.
 
@@ -114,9 +115,11 @@ Current parameters:
 
 Evaluation from Grok:
 {grok_feedback}
-
+{history_block}
 Propose a small, testable parameter update that addresses the weaknesses.
-Change only keys from this set: {allowed}
+Change at most 2-4 keys from this set: {allowed}
+Use a small step relative to the current value; do not swing a knob from one
+end of its plausible range to the other in a single proposal.
 Return ONLY a JSON object of the updated keys and values.
 """
     return _extract_json_object(codex_api_call(prompt))
