@@ -26,8 +26,8 @@ from equity_msft.research_loop.supervisor_state import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the MSFT research supervisor: backtest -> Grok/Optuna propose -> "
-            "accept/reject with hard gates and an optional holdout year."
+            "Run the MSFT research supervisor: backtest -> propose (Grok/Codex/Optuna/hybrid) -> "
+            "accept/reject with walk-forward score, hard gates, and an optional holdout year."
         )
     )
     parser.add_argument("--csv", type=str, default=None, help="OHLCV CSV. Defaults to data/msft_daily.csv")
@@ -39,7 +39,10 @@ def parse_args() -> argparse.Namespace:
         "--proposal-source",
         type=str,
         default=None,
-        help="Override proposal engine: grok, codex, optuna, or noop",
+        help=(
+            "Override proposal engine: grok, codex, grok_then_optuna, "
+            "codex_then_optuna, optuna, or noop"
+        ),
     )
     parser.add_argument("--output-json", type=str, default=None, help="Write final summary JSON here")
     parser.add_argument("--grok-preview-chars", type=int, default=500)
@@ -78,12 +81,14 @@ def main() -> None:
     print(f"best_metrics_snapshot: {best_metrics_snapshot}")
     print(f"holdout_score: {mem.holdout_score}")
     print(f"holdout_metrics_snapshot: {holdout_snapshot}")
+    print(f"holdout_gate: {mem.holdout_gate}")
     print(
         "last_grok_eval_preview:",
         mem.grok_eval[: max(args.grok_preview_chars, 0)].replace("\n", " "),
     )
     print(f"best_params: {config_to_dict(mem.best_cfg)}")
     print(f"proposal_source: {sup_cfg.proposal_source}")
+    print(f"llm_focus_keys: {mem.llm_focus_keys}")
     print(f"log_jsonl_path: {sup_cfg.log_jsonl_path}")
     print(f"best_json_path: {sup_cfg.best_json_path}")
 
@@ -106,6 +111,8 @@ def main() -> None:
             "best_params": config_to_dict(mem.best_cfg),
             "holdout_score": mem.holdout_score,
             "holdout_metrics": mem.holdout_metrics,
+            "holdout_gate": mem.holdout_gate,
+            "llm_focus_keys": list(mem.llm_focus_keys),
             "last_grok_eval": mem.grok_eval,
             "proposal_metadata": mem.proposal_metadata,
             "supervisor_config": supervisor_config_to_dict(sup_cfg),

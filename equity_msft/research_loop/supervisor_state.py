@@ -19,10 +19,11 @@ from equity_msft.research_loop.backtest_runner import (
 )
 from equity_msft.research_loop.optuna_proposer import propose_params_with_optuna
 from equity_msft.research_loop.pipeline import (
+    SEARCH_PARAM_KEYS,
     Config,
+    apply_step_limits,
     config_from_dict,
     config_to_dict,
-    apply_step_limits,
     research_iteration,
     summarize_history_for_prompt,
 )
@@ -31,6 +32,7 @@ from equity_msft.research_loop.walk_forward_scorer import (
     WalkForwardScoreSpec,
     WalkForwardSpec,
     evaluate_walk_forward,
+    score_window_metrics,
 )
 
 
@@ -69,7 +71,8 @@ class SupervisorConfig:
 
     wf_train_days: int = 504
     wf_test_days: int = 126
-    wf_step_days: int = 63
+    # Match test_days so walk-forward windows do not overlap.
+    wf_step_days: int = 126
     wf_bars_per_day: int = 1
     wf_min_test_bars: int = 80
     wf_min_windows_required: int = 3
@@ -125,6 +128,10 @@ class SupervisorMemory:
     holdout_rows: int = 0
     holdout_metrics: dict[str, Any] = field(default_factory=dict)
     holdout_score: float | None = None
+    holdout_gate: dict[str, Any] = field(default_factory=dict)
+
+    llm_seed_done: bool = False
+    llm_focus_keys: list[str] = field(default_factory=list)
 
     last_accept: bool = False
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -188,6 +195,39 @@ def _search_walk_forward(data, cfg: Config, sup_cfg: SupervisorConfig) -> WalkFo
     return evaluate_walk_forward(data=data, cfg=cfg, wf_spec=wf_spec, score_spec=score_spec)
 
 
+def summarize_walk_forward_for_prompt(result: WalkForwardResult, score_spec: WalkForwardScoreSpec) -> str:
+    """Compact per-window table so an LLM seed sees the same structure as acceptance."""
+    lines = [
+        "WALK-FORWARD WINDOWS (search split; this is the accept score structure):",
+        (
+            f"aggregate_score={result.aggregate_score:.4f} "
+            f"windows={result.windows_total} "
+            f"avg_num_trades={result.avg_num_trades:.2f} "
+            f"worst_max_drawdown={result.worst_max_drawdown:.4f}"
+        ),
+        "components: " + ", ".join(f"{k}={v:.4f}" for k, v in result.objective_components.items()),
+    ]
+    for i, window in enumerate(result.windows):
+        terms = score_window_metrics(window.metrics, score_spec)
+        m = window.metrics
+        lines.append(
+            f"- w{i} {window.test_start_date}..{window.test_end_date}: "
+            f"total_return={float(m.get('total_return', 0.0) or 0.0):.4f}, "
+            f"buy_hold_return={float(m.get('buy_hold_return', 0.0) or 0.0):.4f}, "
+            f"max_drawdown={abs(float(m.get('max_drawdown', 0.0) or 0.0)):.4f}, "
+            f"num_trades={int(m.get('num_trades', 0) or 0)}, "
+            f"expected_capture={terms['expected_capture']:.4f}, "
+            f"trade_shortfall_penalty={terms['trade_shortfall_penalty']:.4f}, "
+            f"capture_penalty={terms['capture_penalty']:.4f}, "
+            f"window_score={terms['window_score']:.4f}"
+        )
+    lines.append(
+        "Prefer experiments that raise participation on rising windows "
+        "(high buy_hold_return, low num_trades) without breaking max_drawdown."
+    )
+    return "\n".join(lines)
+
+
 def objective_score(metrics: dict[str, Any], dd_penalty_weight: float) -> float:
     sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
     max_dd = abs(float(metrics.get("max_drawdown", 1.0) or 1.0))
@@ -198,6 +238,39 @@ def passes_hard_gate(metrics: dict[str, Any], cfg: SupervisorConfig) -> bool:
     max_dd = abs(float(metrics.get("max_drawdown", 1.0) or 1.0))
     num_trades = int(metrics.get("num_trades", 0) or 0)
     return (max_dd <= cfg.max_drawdown_limit) and (num_trades >= cfg.min_trades)
+
+
+def evaluate_holdout_gate(metrics: dict[str, Any], cfg: SupervisorConfig) -> dict[str, Any]:
+    """Mechanical post-run gate: positive return, enough trades, controlled drawdown."""
+    total_return = float(metrics.get("total_return", 0.0) or 0.0)
+    num_trades = int(metrics.get("num_trades", 0) or 0)
+    max_dd = abs(float(metrics.get("max_drawdown", 1.0) or 1.0))
+    min_trades = int(cfg.wf_gate_min_trades) if cfg.wf_gate_min_trades is not None else 4
+
+    total_return_ok = total_return > 0.0
+    trades_ok = num_trades >= min_trades
+    drawdown_ok = max_dd <= cfg.max_drawdown_limit
+    return {
+        "passed": bool(total_return_ok and trades_ok and drawdown_ok),
+        "total_return_ok": total_return_ok,
+        "trades_ok": trades_ok,
+        "drawdown_ok": drawdown_ok,
+        "total_return": total_return,
+        "num_trades": num_trades,
+        "max_drawdown": max_dd,
+        "min_trades_required": min_trades,
+        "max_drawdown_limit": cfg.max_drawdown_limit,
+    }
+
+
+def _focus_keys_from_proposal(proposed_params: dict[str, Any], incumbent: dict[str, Any]) -> list[str]:
+    allowed = set(SEARCH_PARAM_KEYS)
+    keys = [
+        k
+        for k, v in proposed_params.items()
+        if k in allowed and incumbent.get(k) != v
+    ]
+    return keys
 
 
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:
@@ -216,7 +289,9 @@ def save_best(path: Path, mem: SupervisorMemory) -> None:
         "iteration": mem.iteration,
         "holdout_metrics": mem.holdout_metrics,
         "holdout_score": mem.holdout_score,
+        "holdout_gate": mem.holdout_gate,
         "walk_forward": mem.best_walk_forward,
+        "llm_focus_keys": list(mem.llm_focus_keys),
     }
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
@@ -260,7 +335,13 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
 
         elif mem.state == LoopState.PROPOSE_CANDIDATE:
             proposal_source = sup_cfg.proposal_source.lower().strip()
-            if proposal_source == "optuna":
+            hybrid_llm = None
+            if proposal_source == "grok_then_optuna":
+                hybrid_llm = "grok"
+            elif proposal_source == "codex_then_optuna":
+                hybrid_llm = "codex"
+
+            def _run_optuna(*, focus_keys: list[str] | None = None) -> None:
                 wf_spec, score_spec = _build_walk_forward_specs(sup_cfg)
                 new_params, proposal_metadata = propose_params_with_optuna(
                     data=search_data,
@@ -270,6 +351,7 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                     seed=sup_cfg.optuna_seed + mem.iteration,
                     wf_spec=wf_spec,
                     wf_score_spec=score_spec,
+                    focus_keys=focus_keys,
                 )
                 mem.proposed_params = new_params
                 mem.proposal_metadata = proposal_metadata
@@ -277,14 +359,32 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                     "optuna proposal | "
                     f"trial={proposal_metadata.get('best_trial_number')} "
                     f"value={proposal_metadata.get('best_value')} "
-                    f"trials={proposal_metadata.get('trial_count')}"
+                    f"trials={proposal_metadata.get('trial_count')} "
+                    f"focus_keys={proposal_metadata.get('focus_keys')}"
                 )
-            elif proposal_source in {"grok", "codex"}:
+
+            def _run_llm_seed(proposer: str, *, with_wf_table: bool) -> None:
                 history_note = summarize_history_for_prompt(mem.history[-sup_cfg.history_window:])
+                if with_wf_table:
+                    _, score_spec = _build_walk_forward_specs(sup_cfg)
+                    score_spec = WalkForwardScoreSpec(
+                        dd_penalty_weight=score_spec.dd_penalty_weight,
+                        sharpe_stability_penalty_weight=score_spec.sharpe_stability_penalty_weight,
+                        max_drawdown_limit=score_spec.max_drawdown_limit,
+                        min_trades=score_spec.min_trades,
+                        trade_shortfall_weight=score_spec.trade_shortfall_weight,
+                        capture_weight=score_spec.capture_weight,
+                        rise_threshold=score_spec.rise_threshold,
+                        max_position_size_pct=float(mem.incumbent_cfg.max_position_size_pct),
+                    )
+                    full_wf = _search_walk_forward(search_data, mem.incumbent_cfg, sup_cfg)
+                    wf_note = summarize_walk_forward_for_prompt(full_wf, score_spec)
+                    history_note = (history_note + "\n\n" + wf_note).strip() if history_note else wf_note
+                    mem.incumbent_walk_forward = _walk_forward_summary(full_wf)
                 new_params, _, grok_eval = research_iteration(
                     search_data,
                     mem.incumbent_cfg,
-                    proposer=proposal_source,
+                    proposer=proposer,
                     history_note=history_note,
                 )
                 incumbent_params = config_to_dict(mem.incumbent_cfg)
@@ -295,8 +395,22 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                     max_params_per_step=sup_cfg.max_params_per_step,
                 )
                 mem.proposed_params = new_params
-                mem.proposal_metadata = {"engine": proposal_source}
+                mem.proposal_metadata = {"engine": proposer, "llm_seed": with_wf_table}
                 mem.grok_eval = grok_eval
+                if with_wf_table:
+                    mem.llm_focus_keys = _focus_keys_from_proposal(new_params, incumbent_params)
+                    mem.llm_seed_done = True
+                    mem.proposal_metadata["llm_focus_keys"] = list(mem.llm_focus_keys)
+
+            if proposal_source == "optuna":
+                _run_optuna()
+            elif hybrid_llm is not None:
+                if not mem.llm_seed_done:
+                    _run_llm_seed(hybrid_llm, with_wf_table=True)
+                else:
+                    _run_optuna(focus_keys=mem.llm_focus_keys or None)
+            elif proposal_source in {"grok", "codex"}:
+                _run_llm_seed(proposal_source, with_wf_table=False)
             elif proposal_source == "noop":
                 mem.proposed_params = {}
                 mem.proposal_metadata = {"engine": "noop"}
@@ -304,7 +418,8 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
             else:
                 raise ValueError(
                     f"Unsupported proposal_source={sup_cfg.proposal_source!r}. "
-                    "Use 'grok', 'codex', 'optuna', or 'noop'."
+                    "Use 'grok', 'codex', 'grok_then_optuna', 'codex_then_optuna', "
+                    "'optuna', or 'noop'."
                 )
             mem.state = LoopState.EVALUATE_CANDIDATE
 
@@ -397,7 +512,16 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                     score_end=holdout_data.index[-1],
                 )
                 mem.holdout_score = objective_score(mem.holdout_metrics, sup_cfg.dd_penalty_weight)
+                mem.holdout_gate = evaluate_holdout_gate(mem.holdout_metrics, sup_cfg)
                 save_best(best_path, mem)
+            else:
+                mem.holdout_gate = {
+                    "passed": False,
+                    "total_return_ok": False,
+                    "trades_ok": False,
+                    "drawdown_ok": False,
+                    "reason": "empty_holdout",
+                }
             mem.state = LoopState.DONE
 
     return mem

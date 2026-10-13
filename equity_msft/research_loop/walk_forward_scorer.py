@@ -22,7 +22,8 @@ from equity_msft.research_loop.pipeline import Config
 class WalkForwardSpec:
     train_days: int = 504
     test_days: int = 126
-    step_days: int = 63
+    # Equal to test_days so adjacent test windows do not share bars.
+    step_days: int = 126
     bars_per_day: int = 1
     min_test_bars: int = 80
     min_windows_required: int = 3
@@ -38,6 +39,8 @@ class WalkForwardScoreSpec:
     trade_shortfall_weight: float = 0.15
     capture_weight: float = 1.0
     rise_threshold: float = 0.05
+    # Cap expected rally capture at the book's max position fraction (default 20%).
+    max_position_size_pct: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,7 @@ def score_window_metrics(metrics: dict[str, Any], score_spec: WalkForwardScoreSp
     num_trades = int(metrics.get("num_trades", 0) or 0)
     buy_hold = float(metrics.get("buy_hold_return", 0.0) or 0.0)
     total_return = float(metrics.get("total_return", 0.0) or 0.0)
+    size_pct = max(0.0, min(1.0, float(score_spec.max_position_size_pct)))
 
     drawdown_penalty = score_spec.dd_penalty_weight * max_dd
     if score_spec.min_trades is None:
@@ -138,15 +142,18 @@ def score_window_metrics(metrics: dict[str, Any], score_spec: WalkForwardScoreSp
         shortfall = max(0, int(score_spec.min_trades) - num_trades)
         trade_shortfall_penalty = score_spec.trade_shortfall_weight * shortfall
     if buy_hold > score_spec.rise_threshold:
-        gap = max(0.0, buy_hold - total_return)
+        expected_capture = buy_hold * size_pct
+        gap = max(0.0, expected_capture - total_return)
         capture_penalty = score_spec.capture_weight * gap
     else:
+        expected_capture = 0.0
         capture_penalty = 0.0
 
     return {
         "sharpe": sharpe,
         "max_drawdown": max_dd,
         "num_trades": float(num_trades),
+        "expected_capture": expected_capture,
         "drawdown_penalty": drawdown_penalty,
         "trade_shortfall_penalty": trade_shortfall_penalty,
         "capture_penalty": capture_penalty,
@@ -161,7 +168,19 @@ def evaluate_walk_forward(
     score_spec: WalkForwardScoreSpec | None = None,
 ) -> WalkForwardResult:
     wf_spec = wf_spec or WalkForwardSpec()
-    score_spec = score_spec or WalkForwardScoreSpec()
+    if score_spec is None:
+        score_spec = WalkForwardScoreSpec(max_position_size_pct=float(cfg.max_position_size_pct))
+    else:
+        score_spec = WalkForwardScoreSpec(
+            dd_penalty_weight=score_spec.dd_penalty_weight,
+            sharpe_stability_penalty_weight=score_spec.sharpe_stability_penalty_weight,
+            max_drawdown_limit=score_spec.max_drawdown_limit,
+            min_trades=score_spec.min_trades,
+            trade_shortfall_weight=score_spec.trade_shortfall_weight,
+            capture_weight=score_spec.capture_weight,
+            rise_threshold=score_spec.rise_threshold,
+            max_position_size_pct=float(cfg.max_position_size_pct),
+        )
 
     indexes = _build_window_indexes(len(data), wf_spec)
     windows: list[WindowResult] = []
@@ -213,6 +232,7 @@ def evaluate_walk_forward(
                 "drawdown_penalty": 0.0,
                 "trade_shortfall_penalty": 0.0,
                 "capture_penalty": 0.0,
+                "expected_capture": 0.0,
                 "stability_penalty": 0.0,
             },
             windows=windows,
@@ -225,6 +245,7 @@ def evaluate_walk_forward(
     drawdown_penalty = mean(term["drawdown_penalty"] for term in terms)
     trade_shortfall_penalty = mean(term["trade_shortfall_penalty"] for term in terms)
     capture_penalty = mean(term["capture_penalty"] for term in terms)
+    expected_capture = mean(term["expected_capture"] for term in terms)
     stability_penalty = score_spec.sharpe_stability_penalty_weight * sharpe_std
     aggregate_score = mean(term["window_score"] for term in terms) - stability_penalty
 
@@ -242,6 +263,7 @@ def evaluate_walk_forward(
             "drawdown_penalty": drawdown_penalty,
             "trade_shortfall_penalty": trade_shortfall_penalty,
             "capture_penalty": capture_penalty,
+            "expected_capture": expected_capture,
             "stability_penalty": stability_penalty,
         },
         windows=windows,

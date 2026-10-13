@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Sequence
 
 from equity_msft.research_loop._bootstrap import ensure_import_paths
 
 ensure_import_paths()
 
-from equity_msft.research_loop.pipeline import Config, SEARCH_PARAM_KEYS, config_from_dict, config_to_dict
+from equity_msft.research_loop.pipeline import (
+    SEARCH_PARAM_KEYS,
+    Config,
+    config_from_dict,
+    config_to_dict,
+)
 from equity_msft.research_loop.walk_forward_scorer import (
     WalkForwardScoreSpec,
     WalkForwardSpec,
@@ -15,38 +20,70 @@ from equity_msft.research_loop.walk_forward_scorer import (
 )
 
 
-def _build_candidate_from_trial(trial, base_cfg: Config) -> Config:
-    """Search the same knobs as backtest.py --sweep, plus a few exit/entry gates."""
+# Plausible ranges for Optuna suggestions. Keep aligned with PARAM_STEP_RANGES
+# in pipeline.py for knobs that both engines touch.
+_OPTUNA_RANGES: dict[str, tuple[float, float]] = {
+    "buy_pullback_rsi": (38.0, 65.0),
+    "sell_overbought_rsi": (74.0, 92.0),
+    "min_atr": (0.5, 5.0),
+    "extreme_setup_rsi": (20.0, 40.0),
+    "extreme_setup_rel_vol": (0.8, 1.5),
+    "bearish_entry_rsi": (18.0, 35.0),
+    "bearish_exit_rsi": (40.0, 60.0),
+    "bullish_hold_rsi": (52.0, 70.0),
+    "take_profit_pnl_pct": (5.0, 10.0),
+    "take_profit_rsi": (52.0, 70.0),
+    "sell_bearish_rsi": (45.0, 62.0),
+    "neutral_rsi_low": (30.0, 50.0),
+    "neutral_rsi_high": (50.0, 70.0),
+    "neutral_rel_volume_max": (1.0, 2.0),
+}
+
+# Default Optuna search (pre-focus). Neutral band knobs are available when an
+# LLM seed names them, but are not swept on every plain optuna iteration.
+_DEFAULT_OPTUNA_KEYS: tuple[str, ...] = (
+    "buy_pullback_rsi",
+    "sell_overbought_rsi",
+    "min_atr",
+    "extreme_setup_rsi",
+    "extreme_setup_rel_vol",
+    "bearish_entry_rsi",
+    "bearish_exit_rsi",
+    "bullish_hold_rsi",
+    "take_profit_pnl_pct",
+    "take_profit_rsi",
+    "sell_bearish_rsi",
+)
+
+
+def _resolve_focus_keys(focus_keys: Sequence[str] | None) -> list[str]:
+    if not focus_keys:
+        return list(_DEFAULT_OPTUNA_KEYS)
+    allowed = set(SEARCH_PARAM_KEYS)
+    focused = [k for k in focus_keys if k in allowed and k in _OPTUNA_RANGES]
+    return focused or list(_DEFAULT_OPTUNA_KEYS)
+
+
+def _build_candidate_from_trial(
+    trial,
+    base_cfg: Config,
+    *,
+    focus_keys: Sequence[str] | None = None,
+) -> Config:
+    """Search focused knobs (or the full SEARCH_PARAM_KEYS set) via Optuna."""
     base = config_to_dict(base_cfg)
+    keys = _resolve_focus_keys(focus_keys)
+    updated = dict(base)
 
-    buy_pullback_rsi = trial.suggest_float("buy_pullback_rsi", 38.0, 54.0)
-    sell_overbought_rsi = trial.suggest_float("sell_overbought_rsi", 74.0, 92.0)
-    min_atr = trial.suggest_float("min_atr", 0.5, 5.0)
-    extreme_setup_rsi = trial.suggest_float("extreme_setup_rsi", 20.0, 40.0)
-    extreme_setup_rel_vol = trial.suggest_float("extreme_setup_rel_vol", 0.8, 1.5)
-    bearish_entry_rsi = trial.suggest_float("bearish_entry_rsi", 18.0, 35.0)
-    bearish_exit_rsi = trial.suggest_float(
-        "bearish_exit_rsi", max(bearish_entry_rsi + 5.0, 40.0), 60.0
-    )
-    bullish_hold_rsi = trial.suggest_float("bullish_hold_rsi", 52.0, 70.0)
-    take_profit_pnl_pct = trial.suggest_float("take_profit_pnl_pct", 5.0, 10.0)
-    take_profit_rsi = trial.suggest_float("take_profit_rsi", 52.0, 70.0)
-    sell_bearish_rsi = trial.suggest_float("sell_bearish_rsi", 45.0, 62.0)
+    for key in keys:
+        lo, hi = _OPTUNA_RANGES[key]
+        if key == "bearish_exit_rsi":
+            entry = float(updated.get("bearish_entry_rsi", base["bearish_entry_rsi"]))
+            lo = max(entry + 5.0, lo)
+            if lo >= hi:
+                lo = min(hi - 1.0, hi)
+        updated[key] = trial.suggest_float(key, lo, hi)
 
-    updated = {
-        **base,
-        "buy_pullback_rsi": buy_pullback_rsi,
-        "sell_overbought_rsi": sell_overbought_rsi,
-        "min_atr": min_atr,
-        "extreme_setup_rsi": extreme_setup_rsi,
-        "extreme_setup_rel_vol": extreme_setup_rel_vol,
-        "bearish_entry_rsi": bearish_entry_rsi,
-        "bearish_exit_rsi": bearish_exit_rsi,
-        "bullish_hold_rsi": bullish_hold_rsi,
-        "take_profit_pnl_pct": take_profit_pnl_pct,
-        "take_profit_rsi": take_profit_rsi,
-        "sell_bearish_rsi": sell_bearish_rsi,
-    }
     return config_from_dict(updated, base_cfg=base_cfg)
 
 
@@ -59,6 +96,7 @@ def propose_params_with_optuna(
     seed: int,
     wf_spec: WalkForwardSpec,
     wf_score_spec: WalkForwardScoreSpec,
+    focus_keys: Sequence[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         import optuna
@@ -67,13 +105,14 @@ def propose_params_with_optuna(
             "Optuna is not installed. Add optuna to your environment to use proposal_source='optuna'."
         ) from exc
 
+    resolved_focus = _resolve_focus_keys(focus_keys)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
     trial_payloads: dict[int, dict[str, Any]] = {}
 
     def objective(trial):
-        candidate_cfg = _build_candidate_from_trial(trial, base_cfg)
+        candidate_cfg = _build_candidate_from_trial(trial, base_cfg, focus_keys=resolved_focus)
         wf_result = evaluate_walk_forward(
             data=data,
             cfg=candidate_cfg,
@@ -113,6 +152,7 @@ def propose_params_with_optuna(
         "best_value": None if best_trial.value is None else float(best_trial.value),
         "best_params": dict(best_trial.params),
         "trial_count": len(study.trials),
+        "focus_keys": list(resolved_focus),
         "walk_forward_spec": asdict(wf_spec),
         "walk_forward_score_spec": asdict(wf_score_spec),
         "best_trial_payload": best_payload,

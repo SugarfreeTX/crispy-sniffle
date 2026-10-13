@@ -30,7 +30,7 @@ SEARCH_PARAM_KEYS = (
 # doesn't sweep (the neutral-band keys) get a comparably sized range so an LLM
 # proposer can't jump the whole band in one iteration.
 PARAM_STEP_RANGES: dict[str, tuple[float, float]] = {
-    "buy_pullback_rsi": (38.0, 54.0),
+    "buy_pullback_rsi": (38.0, 65.0),
     "sell_overbought_rsi": (74.0, 92.0),
     "min_atr": (0.5, 5.0),
     "extreme_setup_rsi": (20.0, 40.0),
