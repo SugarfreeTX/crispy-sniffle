@@ -26,7 +26,12 @@ from equity_msft.research_loop.pipeline import (
     research_iteration,
     summarize_history_for_prompt,
 )
-from equity_msft.research_loop.walk_forward_scorer import WalkForwardScoreSpec, WalkForwardSpec
+from equity_msft.research_loop.walk_forward_scorer import (
+    WalkForwardResult,
+    WalkForwardScoreSpec,
+    WalkForwardSpec,
+    evaluate_walk_forward,
+)
 
 
 class LoopState(Enum):
@@ -73,7 +78,11 @@ class SupervisorConfig:
     wf_dd_penalty_weight: float = 1.5
     wf_sharpe_stability_penalty_weight: float = 0.5
     wf_gate_max_drawdown_limit: float | None = 0.12
-    wf_gate_min_trades: int | None = 2
+    # Per 126-day test window. A window with one trade pays the shortfall penalty.
+    wf_gate_min_trades: int | None = 4
+    wf_trade_shortfall_weight: float = 0.15
+    wf_capture_weight: float = 1.0
+    wf_rise_threshold: float = 0.05
 
     holdout_start: str | None = "2025-01-01"
     holdout_end: str | None = None
@@ -88,6 +97,7 @@ class CandidateEval:
     metrics: dict[str, Any]
     score: float
     passed_hard_gate: bool
+    walk_forward: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -108,6 +118,8 @@ class SupervisorMemory:
     grok_eval: str = ""
     proposal_metadata: dict[str, Any] = field(default_factory=dict)
     candidate_eval: CandidateEval | None = None
+    incumbent_walk_forward: dict[str, Any] = field(default_factory=dict)
+    best_walk_forward: dict[str, Any] = field(default_factory=dict)
 
     search_rows: int = 0
     holdout_rows: int = 0
@@ -135,7 +147,7 @@ def load_supervisor_config(path: str | Path | None) -> SupervisorConfig:
     return SupervisorConfig(**{k: v for k, v in raw.items() if k in allowed})
 
 
-def _build_optuna_wf_specs(cfg: SupervisorConfig) -> tuple[WalkForwardSpec, WalkForwardScoreSpec]:
+def _build_walk_forward_specs(cfg: SupervisorConfig) -> tuple[WalkForwardSpec, WalkForwardScoreSpec]:
     wf_spec = WalkForwardSpec(
         train_days=cfg.wf_train_days,
         test_days=cfg.wf_test_days,
@@ -150,8 +162,30 @@ def _build_optuna_wf_specs(cfg: SupervisorConfig) -> tuple[WalkForwardSpec, Walk
         sharpe_stability_penalty_weight=cfg.wf_sharpe_stability_penalty_weight,
         max_drawdown_limit=cfg.wf_gate_max_drawdown_limit,
         min_trades=cfg.wf_gate_min_trades,
+        trade_shortfall_weight=cfg.wf_trade_shortfall_weight,
+        capture_weight=cfg.wf_capture_weight,
+        rise_threshold=cfg.wf_rise_threshold,
     )
     return wf_spec, score_spec
+
+
+def _walk_forward_summary(result: WalkForwardResult) -> dict[str, Any]:
+    return {
+        "aggregate_score": result.aggregate_score,
+        "windows_total": result.windows_total,
+        "windows_valid": result.windows_valid,
+        "windows_rejected": result.windows_rejected,
+        "mean_sharpe": result.mean_sharpe,
+        "sharpe_std": result.sharpe_std,
+        "worst_max_drawdown": result.worst_max_drawdown,
+        "avg_num_trades": result.avg_num_trades,
+        "objective_components": result.objective_components,
+    }
+
+
+def _search_walk_forward(data, cfg: Config, sup_cfg: SupervisorConfig) -> WalkForwardResult:
+    wf_spec, score_spec = _build_walk_forward_specs(sup_cfg)
+    return evaluate_walk_forward(data=data, cfg=cfg, wf_spec=wf_spec, score_spec=score_spec)
 
 
 def objective_score(metrics: dict[str, Any], dd_penalty_weight: float) -> float:
@@ -182,6 +216,7 @@ def save_best(path: Path, mem: SupervisorMemory) -> None:
         "iteration": mem.iteration,
         "holdout_metrics": mem.holdout_metrics,
         "holdout_score": mem.holdout_score,
+        "walk_forward": mem.best_walk_forward,
     }
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
@@ -211,19 +246,22 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
 
         elif mem.state == LoopState.EVALUATE_INCUMBENT:
             mem.incumbent_metrics = run_backtest_and_extract_metrics(search_data, mem.incumbent_cfg)
-            mem.incumbent_score = objective_score(mem.incumbent_metrics, sup_cfg.dd_penalty_weight)
+            incumbent_wf = _search_walk_forward(search_data, mem.incumbent_cfg, sup_cfg)
+            mem.incumbent_score = incumbent_wf.aggregate_score
+            mem.incumbent_walk_forward = _walk_forward_summary(incumbent_wf)
 
             if mem.best_score == float("-inf"):
                 mem.best_score = mem.incumbent_score
                 mem.best_cfg = mem.incumbent_cfg
                 mem.best_metrics = mem.incumbent_metrics
+                mem.best_walk_forward = dict(mem.incumbent_walk_forward)
 
             mem.state = LoopState.PROPOSE_CANDIDATE
 
         elif mem.state == LoopState.PROPOSE_CANDIDATE:
             proposal_source = sup_cfg.proposal_source.lower().strip()
             if proposal_source == "optuna":
-                wf_spec, score_spec = _build_optuna_wf_specs(sup_cfg)
+                wf_spec, score_spec = _build_walk_forward_specs(sup_cfg)
                 new_params, proposal_metadata = propose_params_with_optuna(
                     data=search_data,
                     base_cfg=mem.incumbent_cfg,
@@ -273,9 +311,16 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
         elif mem.state == LoopState.EVALUATE_CANDIDATE:
             candidate_cfg = config_from_dict(mem.proposed_params, base_cfg=mem.incumbent_cfg)
             candidate_metrics = run_backtest_and_extract_metrics(search_data, candidate_cfg)
-            candidate_score = objective_score(candidate_metrics, sup_cfg.dd_penalty_weight)
+            candidate_wf = _search_walk_forward(search_data, candidate_cfg, sup_cfg)
+            candidate_score = candidate_wf.aggregate_score
             gate_ok = passes_hard_gate(candidate_metrics, sup_cfg)
-            mem.candidate_eval = CandidateEval(candidate_cfg, candidate_metrics, candidate_score, gate_ok)
+            mem.candidate_eval = CandidateEval(
+                candidate_cfg,
+                candidate_metrics,
+                candidate_score,
+                gate_ok,
+                walk_forward=_walk_forward_summary(candidate_wf),
+            )
             mem.state = LoopState.DECIDE_ACCEPT
 
         elif mem.state == LoopState.DECIDE_ACCEPT:
@@ -287,6 +332,7 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                 mem.incumbent_cfg = mem.candidate_eval.cfg
                 mem.incumbent_metrics = mem.candidate_eval.metrics
                 mem.incumbent_score = mem.candidate_eval.score
+                mem.incumbent_walk_forward = dict(mem.candidate_eval.walk_forward)
                 mem.no_improve_streak = 0
             else:
                 mem.no_improve_streak += 1
@@ -299,6 +345,7 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                 mem.best_score = mem.incumbent_score
                 mem.best_cfg = mem.incumbent_cfg
                 mem.best_metrics = mem.incumbent_metrics
+                mem.best_walk_forward = dict(mem.incumbent_walk_forward)
                 save_best(best_path, mem)
             mem.state = LoopState.LOG_ITERATION
 
@@ -315,6 +362,7 @@ def run_supervisor_loop(data, sup_cfg: SupervisorConfig, initial_cfg: Config | N
                 "candidate_score": mem.candidate_eval.score,
                 "candidate_metrics": mem.candidate_eval.metrics,
                 "candidate_passed_hard_gate": mem.candidate_eval.passed_hard_gate,
+                "candidate_walk_forward": mem.candidate_eval.walk_forward,
                 "grok_eval_preview": mem.grok_eval[:500],
                 "search_rows": mem.search_rows,
                 "holdout_rows": mem.holdout_rows,

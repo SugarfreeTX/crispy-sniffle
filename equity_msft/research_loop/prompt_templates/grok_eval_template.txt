@@ -13,8 +13,10 @@ Follow these rules:
 6. Do NOT drift into live trading advice.
 7. Base all reasoning ONLY on the numbers I give you.
 8. Compare strategy return to buy_hold_return when both are present.
-9. Treat this as a capital-preservation strategy. High cash drag can be
-   acceptable if drawdown stays controlled.
+9. Keep max_drawdown controlled. When buy_hold_return is strongly positive
+   and total_return is far below it, or num_trades is very low, treat that
+   cash drag as the main defect. Aim the next experiments at participation
+   in that rising tape. A higher Sharpe from staying in cash is not an improvement.
 10. Recommended experiments must name existing knobs only:
     buy_pullback_rsi, sell_overbought_rsi, min_atr, extreme_setup_rsi,
     extreme_setup_rel_vol, bearish_entry_rsi, bearish_exit_rsi,

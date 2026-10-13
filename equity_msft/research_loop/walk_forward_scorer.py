@@ -34,7 +34,10 @@ class WalkForwardScoreSpec:
     dd_penalty_weight: float = 1.5
     sharpe_stability_penalty_weight: float = 0.5
     max_drawdown_limit: float | None = 0.12
-    min_trades: int | None = 2
+    min_trades: int | None = 4
+    trade_shortfall_weight: float = 0.15
+    capture_weight: float = 1.0
+    rise_threshold: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,52 @@ def _passes_window_gate(metrics: dict[str, Any], score_spec: WalkForwardScoreSpe
     return True
 
 
+def _test_window_buy_hold(frame: pd.DataFrame) -> float:
+    close = None
+    for name in ("Close", "close", "Adj Close"):
+        if name in frame.columns:
+            close = frame[name].astype(float)
+            break
+    if close is None or len(close) < 2:
+        return 0.0
+    start = float(close.iloc[0])
+    end = float(close.iloc[-1])
+    if start <= 0:
+        return 0.0
+    return (end / start) - 1.0
+
+
+def score_window_metrics(metrics: dict[str, Any], score_spec: WalkForwardScoreSpec) -> dict[str, float]:
+    """Score one test window. Low-trade and missed-rally windows stay in the average."""
+    sharpe = float(metrics.get("sharpe", 0.0) or 0.0)
+    max_dd = abs(float(metrics.get("max_drawdown", 1.0) or 1.0))
+    num_trades = int(metrics.get("num_trades", 0) or 0)
+    buy_hold = float(metrics.get("buy_hold_return", 0.0) or 0.0)
+    total_return = float(metrics.get("total_return", 0.0) or 0.0)
+
+    drawdown_penalty = score_spec.dd_penalty_weight * max_dd
+    if score_spec.min_trades is None:
+        trade_shortfall_penalty = 0.0
+    else:
+        shortfall = max(0, int(score_spec.min_trades) - num_trades)
+        trade_shortfall_penalty = score_spec.trade_shortfall_weight * shortfall
+    if buy_hold > score_spec.rise_threshold:
+        gap = max(0.0, buy_hold - total_return)
+        capture_penalty = score_spec.capture_weight * gap
+    else:
+        capture_penalty = 0.0
+
+    return {
+        "sharpe": sharpe,
+        "max_drawdown": max_dd,
+        "num_trades": float(num_trades),
+        "drawdown_penalty": drawdown_penalty,
+        "trade_shortfall_penalty": trade_shortfall_penalty,
+        "capture_penalty": capture_penalty,
+        "window_score": sharpe - drawdown_penalty - trade_shortfall_penalty - capture_penalty,
+    }
+
+
 def evaluate_walk_forward(
     data: pd.DataFrame,
     cfg: Config,
@@ -125,12 +174,15 @@ def evaluate_walk_forward(
         test_start_ts = test_slice.index[0]
         test_end_ts = test_slice.index[-1]
         eval_data = with_warmup(data, test_slice, wf_spec.warmup_bars)
-        metrics = run_backtest_and_extract_metrics(
-            eval_data,
-            cfg,
-            score_start=test_start_ts,
-            score_end=test_end_ts,
+        metrics = dict(
+            run_backtest_and_extract_metrics(
+                eval_data,
+                cfg,
+                score_start=test_start_ts,
+                score_end=test_end_ts,
+            )
         )
+        metrics["buy_hold_return"] = _test_window_buy_hold(test_slice)
         windows.append(
             WindowResult(
                 train_start=ix.train_start,
@@ -144,48 +196,52 @@ def evaluate_walk_forward(
             )
         )
 
-    valid_windows = [w for w in windows if w.passed_gate]
-    if len(valid_windows) < wf_spec.min_windows_required:
+    valid_count = sum(1 for w in windows if w.passed_gate)
+    rejected_count = len(windows) - valid_count
+    if len(windows) < wf_spec.min_windows_required:
         return WalkForwardResult(
             aggregate_score=float("-inf"),
             windows_total=len(windows),
-            windows_valid=len(valid_windows),
-            windows_rejected=len(windows) - len(valid_windows),
+            windows_valid=valid_count,
+            windows_rejected=rejected_count,
             mean_sharpe=0.0,
             sharpe_std=0.0,
             worst_max_drawdown=1.0,
             avg_num_trades=0.0,
             objective_components={
                 "mean_sharpe": 0.0,
-                "drawdown_penalty": float(score_spec.dd_penalty_weight),
+                "drawdown_penalty": 0.0,
+                "trade_shortfall_penalty": 0.0,
+                "capture_penalty": 0.0,
                 "stability_penalty": 0.0,
             },
             windows=windows,
         )
 
-    sharpes = [float(w.metrics.get("sharpe", 0.0)) for w in valid_windows]
-    max_dds = [abs(float(w.metrics.get("max_drawdown", 1.0))) for w in valid_windows]
-    trades = [float(w.metrics.get("num_trades", 0.0)) for w in valid_windows]
-
+    terms = [score_window_metrics(w.metrics, score_spec) for w in windows]
+    sharpes = [term["sharpe"] for term in terms]
     mean_sharpe = mean(sharpes)
     sharpe_std = pstdev(sharpes) if len(sharpes) > 1 else 0.0
-    worst_max_drawdown = max(max_dds)
-    avg_num_trades = mean(trades)
-    drawdown_penalty = score_spec.dd_penalty_weight * worst_max_drawdown
+    drawdown_penalty = mean(term["drawdown_penalty"] for term in terms)
+    trade_shortfall_penalty = mean(term["trade_shortfall_penalty"] for term in terms)
+    capture_penalty = mean(term["capture_penalty"] for term in terms)
     stability_penalty = score_spec.sharpe_stability_penalty_weight * sharpe_std
+    aggregate_score = mean(term["window_score"] for term in terms) - stability_penalty
 
     return WalkForwardResult(
-        aggregate_score=mean_sharpe - drawdown_penalty - stability_penalty,
+        aggregate_score=aggregate_score,
         windows_total=len(windows),
-        windows_valid=len(valid_windows),
-        windows_rejected=len(windows) - len(valid_windows),
+        windows_valid=valid_count,
+        windows_rejected=rejected_count,
         mean_sharpe=mean_sharpe,
         sharpe_std=sharpe_std,
-        worst_max_drawdown=worst_max_drawdown,
-        avg_num_trades=avg_num_trades,
+        worst_max_drawdown=max(term["max_drawdown"] for term in terms),
+        avg_num_trades=mean(term["num_trades"] for term in terms),
         objective_components={
             "mean_sharpe": mean_sharpe,
             "drawdown_penalty": drawdown_penalty,
+            "trade_shortfall_penalty": trade_shortfall_penalty,
+            "capture_penalty": capture_penalty,
             "stability_penalty": stability_penalty,
         },
         windows=windows,

@@ -23,14 +23,17 @@ GROK_RESPONSES_URL = "https://api.x.ai/v1/responses"
 DEFAULT_GROK_MODEL = os.getenv("GROK_MODEL", "grok-4.6")
 DEFAULT_GROK_PROPOSER_MODEL = os.getenv("GROK_PROPOSER_MODEL", "grok-4.20-multi-agent")
 
-# api.x.ai sits behind Cloudflare, which occasionally resets the TCP connection
-# before responding (RemoteDisconnected/ConnectionError) for non-browser TLS
-# clients like urllib3, even with valid credentials. Retrying succeeds almost
-# immediately, so we retry a few times with backoff instead of failing outright.
-_MAX_RETRIES = 8
-_BACKOFF_SECONDS = 3.0
-_MAX_BACKOFF_SECONDS = 60.0
-_RETRY_STATUS = {408, 429, 500, 502, 503, 504}
+# api.x.ai is behind Cloudflare. A non-streaming completion sends no bytes until
+# the model finishes, so the proxy resets the socket while the client is still
+# blocked in the status-line read (ConnectionError / RemoteDisconnected). The
+# next attempt then sits in that same read until timeout. Streaming keeps the
+# connection alive with reasoning and content deltas, and retries only cover a
+# reset that still happens before the first byte.
+_MAX_RETRIES = 5
+_BACKOFF_SECONDS = 2.0
+_MAX_BACKOFF_SECONDS = 30.0
+_CONNECT_TIMEOUT_SECONDS = 20
+_RETRY_STATUS = {408, 429, 500, 502, 503, 504, 520, 522, 524}
 _RETRY_EXC = (
     requests.exceptions.ConnectionError,
     requests.exceptions.Timeout,
@@ -38,21 +41,186 @@ _RETRY_EXC = (
 )
 
 
-def _post_with_retries(url: str, *, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> requests.Response:
+def _exc_brief(exc: BaseException) -> str:
+    text = " ".join(str(exc).split())
+    if not text:
+        return type(exc).__name__
+    return text[:220]
+
+
+def _log_retry(attempt: int, detail: str) -> None:
+    print(
+        f"[grok] {detail} on attempt {attempt + 1}/{_MAX_RETRIES}; retrying",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return min(_BACKOFF_SECONDS * 2**attempt, _MAX_BACKOFF_SECONDS)
+
+
+def _sse_payloads(response: requests.Response):
+    response.encoding = response.encoding or "utf-8"
+    buffer = ""
+    for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+        if not chunk:
+            continue
+        buffer += chunk.replace("\r\n", "\n").replace("\r", "\n")
+        while "\n\n" in buffer:
+            raw, buffer = buffer.split("\n\n", 1)
+            payload = _sse_data(raw)
+            if payload is not None:
+                yield payload
+    payload = _sse_data(buffer)
+    if payload is not None:
+        yield payload
+
+
+def _sse_data(raw: str) -> str | None:
+    data_lines = []
+    for line in raw.split("\n"):
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if not data_lines:
+        return None
+    return "\n".join(data_lines)
+
+
+def _json_objects(payloads) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for payload in payloads:
+        if payload.strip() == "[DONE]":
+            break
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _chat_text_from_json(data: dict[str, Any]) -> str:
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected Grok API response shape: {data}") from exc
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError(f"Grok API returned an empty completion: {data}")
+    return content.strip()
+
+
+def _chat_text_from_events(events: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for event in events:
+        for choice in event.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") or {}
+            if isinstance(delta, dict):
+                content = delta.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+            message = choice.get("message") or {}
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                parts.append(message["content"])
+    text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError(f"Grok API stream ended without content: {events[:3]}")
+    return text
+
+
+def _responses_text_from_events(events: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    completed: dict[str, Any] | None = None
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "error":
+            message = event.get("message") or event.get("error") or event
+            raise RuntimeError(f"Grok responses stream error: {message}")
+        if event_type == "response.output_text.delta" and isinstance(event.get("delta"), str):
+            parts.append(event["delta"])
+        if event_type in {"response.completed", "response.incomplete"}:
+            response_body = event.get("response")
+            if isinstance(response_body, dict):
+                completed = response_body
+    if completed is not None:
+        try:
+            return _extract_responses_text(completed)
+        except RuntimeError:
+            pass
+    text = "".join(parts).strip()
+    if text:
+        return text
+    raise RuntimeError(f"Grok responses stream ended without text: {events[:3]}")
+
+
+def _text_from_response(response: requests.Response, *, kind: str) -> str:
+    content_type = response.headers.get("Content-Type", "")
+    if "text/event-stream" not in content_type:
+        data = response.json()
+        if kind == "chat":
+            return _chat_text_from_json(data)
+        return _extract_responses_text(data)
+
+    events = _json_objects(_sse_payloads(response))
+    if kind == "chat":
+        return _chat_text_from_events(events)
+    return _responses_text_from_events(events)
+
+
+def _post_for_text(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: int,
+    kind: str,
+) -> str:
+    body = dict(payload)
+    body["stream"] = True
+    request_headers = dict(headers)
+    request_headers.setdefault("Accept", "text/event-stream")
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
+        started = time.monotonic()
         try:
             # Fresh session per attempt so a reset keep-alive connection is never reused.
             with requests.Session() as session:
-                response = session.post(url, headers=headers, json=payload, timeout=timeout)
-            if response.status_code not in _RETRY_STATUS or attempt == _MAX_RETRIES - 1:
-                return response
+                response = session.post(
+                    url,
+                    headers=request_headers,
+                    json=body,
+                    timeout=(_CONNECT_TIMEOUT_SECONDS, timeout),
+                    stream=True,
+                )
+                try:
+                    elapsed = time.monotonic() - started
+                    if response.status_code in _RETRY_STATUS and attempt < _MAX_RETRIES - 1:
+                        response.close()
+                        _log_retry(attempt, f"HTTP {response.status_code} after {elapsed:.0f}s")
+                    else:
+                        if response.status_code >= 400:
+                            error_text = response.text[:500]
+                            raise RuntimeError(
+                                f"Grok API request failed with status {response.status_code}: {error_text}"
+                            )
+                        print(
+                            f"[grok] streaming {kind} response (headers in {elapsed:.1f}s)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        return _text_from_response(response, kind=kind)
+                finally:
+                    response.close()
         except _RETRY_EXC as exc:
             last_exc = exc
+            elapsed = time.monotonic() - started
             if attempt == _MAX_RETRIES - 1:
                 raise
-            print(f"[grok] {type(exc).__name__} on attempt {attempt + 1}/{_MAX_RETRIES}; retrying", file=sys.stderr, flush=True)
-        time.sleep(min(_BACKOFF_SECONDS * 2**attempt, _MAX_BACKOFF_SECONDS))
+            _log_retry(attempt, f"{_exc_brief(exc)} after {elapsed:.0f}s")
+        time.sleep(_backoff_seconds(attempt))
     assert last_exc is not None
     raise last_exc
 
@@ -92,19 +260,13 @@ def grok_api_call(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    response = _post_with_retries(GROK_API_URL, headers=headers, payload=payload, timeout=timeout)
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
-        raise RuntimeError(
-            f"Grok API request failed with status {response.status_code}: {response.text}"
-        ) from exc
-
-    data = response.json()
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected Grok API response shape: {data}") from exc
+    return _post_for_text(
+        GROK_API_URL,
+        headers=headers,
+        payload=payload,
+        timeout=timeout,
+        kind="chat",
+    )
 
 
 def evaluate_with_grok(metrics: dict[str, Any]) -> str:
@@ -201,15 +363,13 @@ def grok_responses_api_call(
         "Authorization": f"Bearer {_xai_api_key()}",
         "Content-Type": "application/json",
     }
-    response = _post_with_retries(GROK_RESPONSES_URL, headers=headers, payload=payload, timeout=timeout)
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
-        raise RuntimeError(
-            f"Grok Responses API request failed with status {response.status_code}: {response.text}"
-        ) from exc
-
-    return _extract_responses_text(response.json())
+    return _post_for_text(
+        GROK_RESPONSES_URL,
+        headers=headers,
+        payload=payload,
+        timeout=timeout,
+        kind="responses",
+    )
 
 
 def refine_strategy_with_grok(current_params: dict, grok_feedback: str, history_note: str = "") -> dict[str, Any]:

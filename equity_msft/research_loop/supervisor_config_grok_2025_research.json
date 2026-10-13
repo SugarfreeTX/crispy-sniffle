@@ -1,7 +1,7 @@
 {
   "proposal_source": "grok",
-  "max_iterations": 12,
-  "patience": 5,
+  "max_iterations": 20,
+  "patience": 8,
   "min_improvement": 0.005,
   "max_drawdown_limit": 0.12,
   "min_trades": 12,
