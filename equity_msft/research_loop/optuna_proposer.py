@@ -24,6 +24,7 @@ from equity_msft.research_loop.walk_forward_scorer import (
 # in pipeline.py for knobs that both engines touch.
 _OPTUNA_RANGES: dict[str, tuple[float, float]] = {
     "buy_pullback_rsi": (38.0, 65.0),
+    "buy_grind_rsi_max": (55.0, 75.0),
     "sell_overbought_rsi": (74.0, 92.0),
     "min_atr": (0.5, 5.0),
     "extreme_setup_rsi": (20.0, 40.0),
@@ -43,6 +44,7 @@ _OPTUNA_RANGES: dict[str, tuple[float, float]] = {
 # LLM seed names them, but are not swept on every plain optuna iteration.
 _DEFAULT_OPTUNA_KEYS: tuple[str, ...] = (
     "buy_pullback_rsi",
+    "buy_grind_rsi_max",
     "sell_overbought_rsi",
     "min_atr",
     "extreme_setup_rsi",
@@ -80,6 +82,11 @@ def _build_candidate_from_trial(
         if key == "bearish_exit_rsi":
             entry = float(updated.get("bearish_entry_rsi", base["bearish_entry_rsi"]))
             lo = max(entry + 5.0, lo)
+            if lo >= hi:
+                lo = min(hi - 1.0, hi)
+        if key == "buy_grind_rsi_max":
+            pullback = float(updated.get("buy_pullback_rsi", base["buy_pullback_rsi"]))
+            lo = max(pullback, lo)
             if lo >= hi:
                 lo = min(hi - 1.0, hi)
         updated[key] = trial.suggest_float(key, lo, hi)

@@ -18,11 +18,13 @@ Follow these rules:
    cash drag as the main defect. Aim the next experiments at participation
    in that rising tape. A higher Sharpe from staying in cash is not an improvement.
 10. Recommended experiments must name existing knobs only:
-    buy_pullback_rsi, sell_overbought_rsi, min_atr, extreme_setup_rsi,
-    extreme_setup_rel_vol, bearish_entry_rsi, bearish_exit_rsi,
-    bullish_hold_rsi, take_profit_pnl_pct, take_profit_rsi,
+    buy_pullback_rsi, buy_grind_rsi_max, sell_overbought_rsi, min_atr,
+    extreme_setup_rsi, extreme_setup_rel_vol, bearish_entry_rsi,
+    bearish_exit_rsi, bullish_hold_rsi, take_profit_pnl_pct, take_profit_rsi,
     sell_bearish_rsi, neutral_rsi_low, neutral_rsi_high,
     neutral_rel_volume_max.
+    buy_grind_rsi_max is the Entry B ceiling (bullish continuation when RSI is
+    above buy_pullback_rsi but at or below buy_grind_rsi_max).
 
 Acknowledge these rules with:
 "Rules loaded. Ready for metrics."

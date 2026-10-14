@@ -9,6 +9,7 @@ from typing import Any
 # so a run can override them, but Optuna / Grok / Codex are steered at these first.
 SEARCH_PARAM_KEYS = (
     "buy_pullback_rsi",
+    "buy_grind_rsi_max",
     "sell_overbought_rsi",
     "min_atr",
     "extreme_setup_rsi",
@@ -31,6 +32,7 @@ SEARCH_PARAM_KEYS = (
 # proposer can't jump the whole band in one iteration.
 PARAM_STEP_RANGES: dict[str, tuple[float, float]] = {
     "buy_pullback_rsi": (38.0, 65.0),
+    "buy_grind_rsi_max": (55.0, 75.0),
     "sell_overbought_rsi": (74.0, 92.0),
     "min_atr": (0.5, 5.0),
     "extreme_setup_rsi": (20.0, 40.0),
@@ -144,6 +146,7 @@ class Config:
     bearish_entry_rsi: float = 28.0
     bearish_exit_rsi: float = 52.0
     buy_pullback_rsi: float = 46.0
+    buy_grind_rsi_max: float = 68.0
     sell_bearish_rsi: float = 52.0
     sell_overbought_rsi: float = 88.0
     take_profit_pnl_pct: float = 7.0
@@ -183,6 +186,10 @@ def sanitize_config(cfg: Config) -> Config:
             values["bearish_exit_rsi"],
             values["bearish_entry_rsi"],
         )
+
+    # Grind ceiling must sit at or above the pullback cap so entry B stays valid.
+    if values["buy_grind_rsi_max"] < values["buy_pullback_rsi"]:
+        values["buy_grind_rsi_max"] = values["buy_pullback_rsi"]
 
     values["max_position_size_pct"] = min(max(float(values["max_position_size_pct"]), 0.01), 1.0)
     values["risk_per_trade_pct"] = min(max(float(values["risk_per_trade_pct"]), 0.001), 0.10)

@@ -74,6 +74,7 @@ def should_auto_hold(
     neutral_rsi_high = float(config.get("neutral_rsi_high", 60.0))
     neutral_rel_volume_max = float(config.get("neutral_rel_volume_max", 1.3))
     bullish_hold_rsi = float(config.get("bullish_hold_rsi", 62.0))
+    buy_grind_rsi_max = float(config.get("buy_grind_rsi_max", 68.0))
     bearish_entry_rsi = float(config.get("bearish_entry_rsi", 20.0))
     bearish_exit_rsi = float(config.get("bearish_exit_rsi", 52.0))
     drawdown_caution_rsi = float(config.get("drawdown_caution_rsi", 35.0))
@@ -86,6 +87,7 @@ def should_auto_hold(
     trend_label = str(md.get("trend_label", "Neutral"))
     regime_changed = bool(md.get("regime_changed_today", False))
     shares = int(port.get("shares", 0) or 0)
+    bullish = "Bullish" in trend_label
 
     if drawdown_pct >= 10.0:
         return True, f"Emergency drawdown ({drawdown_pct:.1f}%) - all new risk blocked"
@@ -95,11 +97,13 @@ def should_auto_hold(
             f"Restricted drawdown ({drawdown_pct:.1f}%) - HOLD or exit only, no new BUY positions"
         )
 
-    if drawdown_pct >= 5.0 and ("Bullish" not in trend_label or rsi > drawdown_caution_rsi):
+    if drawdown_pct >= 5.0 and (not bullish or rsi > drawdown_caution_rsi):
         return True, f"Caution drawdown ({drawdown_pct:.1f}%) - not extreme oversold setup"
 
+    # Quiet neutral band: do not auto-block bullish grind/continuation tapes.
     if (
-        neutral_rsi_low <= rsi <= neutral_rsi_high
+        not bullish
+        and neutral_rsi_low <= rsi <= neutral_rsi_high
         and regime == "Normal"
         and rel_vol <= neutral_rel_volume_max
         and not regime_changed
@@ -109,7 +113,14 @@ def should_auto_hold(
     if drawdown_pct >= max_dd_warning:
         return True, f"Drawdown at {drawdown_pct:.2f}% - approaching max drawdown limit"
 
-    if "Bullish" in trend_label and rsi >= bullish_hold_rsi:
+    # Flat + bullish: allow RSI up to buy_grind_rsi_max so entry B can fire;
+    # when already long, keep the older bullish_hold_rsi ceiling for soft holds.
+    if shares <= 0 and bullish and rsi > buy_grind_rsi_max:
+        return True, (
+            f"Bullish trend but RSI {rsi:.1f} too extended for new entry "
+            f"(need <= {buy_grind_rsi_max:.0f})"
+        )
+    if shares > 0 and bullish and rsi >= bullish_hold_rsi:
         return True, f"Bullish trend but RSI {rsi:.1f} not low enough for entry"
 
     if "Bearish" in trend_label:
@@ -165,6 +176,9 @@ class MSFTDailyBacktestStrategy(Strategy):
     bearish_entry_rsi = 28.0  # flat+bearish: only consider entries when RSI <= this
     bearish_exit_rsi = 52.0   # long+bearish: only consider exits when RSI >= this
     buy_pullback_rsi = 46.0
+    # Entry B: bullish continuation when RSI is above the pullback cap but not
+    # extended past this ceiling (see _determine_action grind path).
+    buy_grind_rsi_max = 68.0
     sell_bearish_rsi = 52.0
     sell_overbought_rsi = 88.0    # raised 74→88; take_profit_pnl_pct is the primary exit
     take_profit_pnl_pct = 7.0     # tightened 8→7% to pair with relaxed overbought RSI
@@ -366,6 +380,7 @@ class MSFTDailyBacktestStrategy(Strategy):
             "neutral_rsi_high": float(self.neutral_rsi_high),
             "neutral_rel_volume_max": float(self.neutral_rel_volume_max),
             "bullish_hold_rsi": float(self.bullish_hold_rsi),
+            "buy_grind_rsi_max": float(self.buy_grind_rsi_max),
             "bearish_entry_rsi": float(self.bearish_entry_rsi),
             "bearish_exit_rsi": float(self.bearish_exit_rsi),
             # drawdown_caution_rsi and max_dd_warning fall back to module defaults
@@ -406,13 +421,27 @@ class MSFTDailyBacktestStrategy(Strategy):
             return "HOLD", "Loss streak protection active"
 
         bullish = "Bullish" in trend_label or bool(md.get("price_above_200_sma", False))
+        pullback_cap = float(self.buy_pullback_rsi)
+        grind_cap = float(self.buy_grind_rsi_max)
         extreme_setup = (
             rsi < float(self.extreme_setup_rsi)
             and rel_volume > float(self.extreme_setup_rel_vol)
         )
 
-        if bullish and rsi <= float(self.buy_pullback_rsi):
+        # Entry A: classic pullback in a bullish tape.
+        if bullish and rsi <= pullback_cap:
             return "BUY", "Bullish trend pullback setup"
+
+        # Entry B: grind / trend continuation — bullish, RSI above the pullback
+        # floor but not past the grind ceiling (flat book only).
+        if (
+            shares <= 0
+            and bullish
+            and rsi > pullback_cap
+            and rsi <= grind_cap
+            and rsi < float(self.sell_overbought_rsi)
+        ):
+            return "BUY", "Bullish trend grind/continuation setup"
 
         if extreme_setup and "Bearish" not in trend_label:
             return "BUY", "Extreme RSI pullback with conviction volume"

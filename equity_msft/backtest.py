@@ -62,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         help="Long+bearish: auto-HOLD unless RSI >= this (exit/trim floor)",
     )
     parser.add_argument("--buy-pullback-rsi", type=float, default=46.0, help="BUY pullback trigger RSI cap in bullish trend")
+    parser.add_argument(
+        "--buy-grind-rsi-max",
+        type=float,
+        default=68.0,
+        help="BUY grind/continuation RSI ceiling in bullish trend (entry B)",
+    )
     parser.add_argument("--sell-bearish-rsi", type=float, default=52.0, help="SELL trigger RSI floor in bearish trend")
     parser.add_argument("--sell-overbought-rsi", type=float, default=88.0, help="SELL trigger RSI floor for overbought exits")
     parser.add_argument("--take-profit-pnl-pct", type=float, default=7.0, help="Take-profit SELL trigger unrealized PnL percent")
@@ -138,6 +144,7 @@ def build_strategy_params(args: argparse.Namespace) -> Dict[str, Any]:
         "bearish_entry_rsi": args.bearish_entry_rsi,
         "bearish_exit_rsi": args.bearish_exit_rsi,
         "buy_pullback_rsi": args.buy_pullback_rsi,
+        "buy_grind_rsi_max": args.buy_grind_rsi_max,
         "sell_bearish_rsi": args.sell_bearish_rsi,
         "sell_overbought_rsi": args.sell_overbought_rsi,
         "take_profit_pnl_pct": args.take_profit_pnl_pct,

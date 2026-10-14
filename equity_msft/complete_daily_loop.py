@@ -449,6 +449,7 @@ def should_auto_hold(
     neutral_rsi_high = float(config.get("neutral_rsi_high", 60.0))
     neutral_rel_volume_max = float(config.get("neutral_rel_volume_max", 1.3))
     bullish_hold_rsi = float(config.get("bullish_hold_rsi", 62.0))
+    buy_grind_rsi_max = float(config.get("buy_grind_rsi_max", 68.0))
     # Dual bearish gates: entry ceiling (flat) vs exit floor (long). See DEFAULT_SOFT_THRESHOLDS.
     bearish_entry_rsi = float(config.get("bearish_entry_rsi", 20.0))
     bearish_exit_rsi = float(config.get("bearish_exit_rsi", 52.0))
@@ -456,6 +457,7 @@ def should_auto_hold(
     max_dd_warning = float(config.get("max_dd_warning", 6.0))
 
     shares = int(port.get("shares", 0) or 0)
+    bullish = "Bullish" in trend_label
 
     # =====================================================================
     # HARD / OBJECTIVE BLOCKS (Point 1 in our tuning list)
@@ -469,18 +471,17 @@ def should_auto_hold(
 
     if drawdown_pct >= 5.0:
         # Caution level - still let Grok decide on truly extreme setups
-        if "Bullish" not in trend_label or rsi > drawdown_caution_rsi:
+        if not bullish or rsi > drawdown_caution_rsi:
             return True, f"Caution drawdown ({drawdown_pct:.1f}%) - not extreme oversold setup"
 
     # =====================================================================
-    # SOFTER SIGNAL-BASED RULES (Point 2)
-    # These are the main ones we can relax to give the LLM (Point 3) more
-    # chances to make nuanced decisions while the hard blocks above stay in place.
+    # SOFTER SIGNAL-BASED RULES (Point 2) — aligned with backtest Entry B
     # =====================================================================
 
-    # Neutral zone – most common auto-hold case today
+    # Quiet neutral band: do not auto-block bullish grind/continuation tapes.
     if (
-        neutral_rsi_low <= rsi <= neutral_rsi_high
+        not bullish
+        and neutral_rsi_low <= rsi <= neutral_rsi_high
         and regime == "Normal"
         and rel_vol <= neutral_rel_volume_max
         and not regime_changed
@@ -491,8 +492,14 @@ def should_auto_hold(
     if drawdown_pct >= max_dd_warning:
         return True, f"Drawdown at {drawdown_pct:.2f}% - approaching max drawdown limit"
 
-    # Bullish but not oversold enough to justify buy
-    if "Bullish" in trend_label and rsi >= bullish_hold_rsi:
+    # Flat + bullish: allow RSI up to buy_grind_rsi_max so Entry B can fire;
+    # when already long, keep bullish_hold_rsi as the soft ceiling.
+    if shares <= 0 and bullish and rsi > buy_grind_rsi_max:
+        return True, (
+            f"Bullish trend but RSI {rsi:.1f} too extended for new entry "
+            f"(need <= {buy_grind_rsi_max:.0f})"
+        )
+    if shares > 0 and bullish and rsi >= bullish_hold_rsi:
         return True, f"Bullish trend but RSI {rsi:.1f} not low enough for entry"
 
     # Bearish dual gates (position-aware):
@@ -518,39 +525,114 @@ def should_auto_hold(
 
 
 # =====================================================================
-# Tunable soft gate thresholds (for Point 2 / Point 3 experimentation)
+# Tunable soft / strategy thresholds
 # =====================================================================
-
-# Current conservative defaults
-DEFAULT_SOFT_THRESHOLDS = {
+# Promoted from research_loop/best_config_grok_then_optuna_entry_b.json
+# (holdout_gate passed). Used for shadow daily collection via launchd
+# (--dry-run --shadow-grok --relax-gates). Hard DD/streak/ATR blocks stay fixed.
+ENTRY_B_RESEARCH_THRESHOLDS = {
     "neutral_rsi_low": 40.0,
     "neutral_rsi_high": 60.0,
     "neutral_rel_volume_max": 1.3,
-    "bullish_hold_rsi": 62.0,
-    # Flat + Bearish: only invite Grok when RSI <= this (mean-reversion ceiling)
-    "bearish_entry_rsi": 20.0,
-    # Long + Bearish: only invite Grok when RSI >= this (exit/trim floor)
+    "bullish_hold_rsi": 64.7,
+    "buy_pullback_rsi": 49.2,
+    "buy_grind_rsi_max": 69.0,
+    "bearish_entry_rsi": 28.0,
     "bearish_exit_rsi": 52.0,
+    "sell_bearish_rsi": 52.0,
+    "sell_overbought_rsi": 88.0,
+    "take_profit_pnl_pct": 7.0,
+    "take_profit_rsi": 58.0,
+    "extreme_setup_rsi": 30.0,
+    "extreme_setup_rel_vol": 1.0,
     "drawdown_caution_rsi": 35.0,
     "max_dd_warning": 6.0,
 }
 
-# A "relaxed but still conservative" set you can use while testing in
-# --dry-run --shadow-grok mode. These changes mainly increase how often
-# the deterministic layer says "GROK_DECIDED" (instead of auto-HOLD),
-# giving the LLM more opportunities to make nuanced decisions (Point 3)
-# while the hard drawdown / loss-streak / ATR / position-size blocks (Point 1)
-# remain fully in effect.
-RELAXED_SOFT_THRESHOLDS = {
-    "neutral_rsi_low": 38.0,
-    "neutral_rsi_high": 62.0,
-    "neutral_rel_volume_max": 1.6,   # allow a bit more volume before auto-holding
-    "bullish_hold_rsi": 57.0,        # allow milder pullbacks in uptrends
-    "bearish_entry_rsi": 28.0,       # wider mean-reversion entry window for Grok
-    "bearish_exit_rsi": 45.0,        # earlier exit/trim consideration while long
-    "drawdown_caution_rsi": 40.0,
-    "max_dd_warning": 6.0,
-}
+DEFAULT_SOFT_THRESHOLDS = dict(ENTRY_B_RESEARCH_THRESHOLDS)
+
+# launchd uses --relax-gates; keep that path on the same research winner so
+# shadow logs match Entry B (not the older wider-gate experiment set).
+RELAXED_SOFT_THRESHOLDS = dict(ENTRY_B_RESEARCH_THRESHOLDS)
+
+
+def determine_deterministic_action(
+    packet: Dict[str, Any],
+    thresholds: Dict[str, float] | None = None,
+) -> Tuple[str, str]:
+    """Mirror backtest Entry A / Entry B (and exits) for shadow logging.
+
+    Soft auto-hold is checked first (same as live). Hard ATR / drawdown /
+    loss-streak gates still apply before any BUY.
+    """
+    config = thresholds or DEFAULT_SOFT_THRESHOLDS
+    auto_hold, hold_reason = should_auto_hold(packet, thresholds=config)
+    if auto_hold:
+        return "HOLD", hold_reason
+
+    md = packet.get("market_data", {})
+    port = packet.get("portfolio", {})
+    constraints = packet.get("constraints", {})
+
+    trend_label = str(md.get("trend_label", "Neutral"))
+    rsi = float(md.get("rsi_14", 50.0))
+    rel_volume = float(md.get("relative_volume", 1.0))
+    atr_14 = float(md.get("atr_14", 0.0))
+    shares = int(port.get("shares", 0) or 0)
+    drawdown_level = int(port.get("drawdown_level", 0) or 0)
+
+    if "Insufficient data" in trend_label:
+        return "HOLD", "Need 200 bars before trend-aware trading"
+
+    sell_bearish_rsi = float(config.get("sell_bearish_rsi", 52.0))
+    sell_overbought_rsi = float(config.get("sell_overbought_rsi", 88.0))
+    take_profit_pnl_pct = float(config.get("take_profit_pnl_pct", 7.0))
+    take_profit_rsi = float(config.get("take_profit_rsi", 58.0))
+    buy_pullback_rsi = float(config.get("buy_pullback_rsi", 46.0))
+    buy_grind_rsi_max = float(config.get("buy_grind_rsi_max", 68.0))
+    extreme_setup_rsi = float(config.get("extreme_setup_rsi", 30.0))
+    extreme_setup_rel_vol = float(config.get("extreme_setup_rel_vol", 1.0))
+    min_atr = float(constraints.get("min_atr", 3.5))
+    max_atr = float(constraints.get("max_atr", 18.0))
+
+    if shares > 0:
+        if "Bearish" in trend_label and rsi >= sell_bearish_rsi:
+            return "SELL", "Bearish trend with elevated RSI"
+        if rsi >= sell_overbought_rsi:
+            return "SELL", "RSI overbought"
+        if float(port.get("unrealized_pnl_pct", 0.0) or 0.0) >= take_profit_pnl_pct and rsi >= take_profit_rsi:
+            return "SELL", "Taking partial profits in strength"
+
+    if drawdown_level >= 2:
+        return "HOLD", "Drawdown protection active"
+
+    if atr_14 < min_atr or atr_14 > max_atr:
+        return "HOLD", "ATR outside trade bounds"
+
+    if float(port.get("loss_streak_multiplier", 1.0) or 1.0) <= 0.0:
+        return "HOLD", "Loss streak protection active"
+
+    bullish = "Bullish" in trend_label or bool(md.get("price_above_200_sma", False))
+    extreme_setup = rsi < extreme_setup_rsi and rel_volume > extreme_setup_rel_vol
+
+    # Entry A: classic pullback
+    if bullish and rsi <= buy_pullback_rsi:
+        return "BUY", "Bullish trend pullback setup"
+
+    # Entry B: grind / trend continuation (flat book only)
+    if (
+        shares <= 0
+        and bullish
+        and rsi > buy_pullback_rsi
+        and rsi <= buy_grind_rsi_max
+        and rsi < sell_overbought_rsi
+    ):
+        return "BUY", "Bullish trend grind/continuation setup"
+
+    if extreme_setup and "Bearish" not in trend_label:
+        return "BUY", "Extreme RSI pullback with conviction volume"
+
+    return "HOLD", "No deterministic edge"
 
 def fetch_msft_daily() -> Optional[Dict[str, Any]]:
     """Fetch MSFT market data and build trading packet with current portfolio state"""
@@ -761,7 +843,14 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
                 "max_drawdown_pct": 0.10,
                 "risk_per_trade_pct": 0.02,
                 "min_atr": 3.5,
-                "max_atr": 18.0
+                "max_atr": 18.0,
+                # Entry A / B knobs from ENTRY_B_RESEARCH_THRESHOLDS (shadow + Grok context)
+                "buy_pullback_rsi": ENTRY_B_RESEARCH_THRESHOLDS["buy_pullback_rsi"],
+                "buy_grind_rsi_max": ENTRY_B_RESEARCH_THRESHOLDS["buy_grind_rsi_max"],
+                "bullish_hold_rsi": ENTRY_B_RESEARCH_THRESHOLDS["bullish_hold_rsi"],
+                "sell_overbought_rsi": ENTRY_B_RESEARCH_THRESHOLDS["sell_overbought_rsi"],
+                "take_profit_pnl_pct": ENTRY_B_RESEARCH_THRESHOLDS["take_profit_pnl_pct"],
+                "take_profit_rsi": ENTRY_B_RESEARCH_THRESHOLDS["take_profit_rsi"],
             }
         }
         
@@ -803,17 +892,21 @@ HARD BLOCKS (override all else):
 Core rules:
 - Respect suggested_position_size (already regime- & drawdown-adjusted) — never suggest larger.
 - Only BUY if suggested_position_size >= 1.
-- The local deterministic gates have been intentionally relaxed to give you more opportunity for judgment. Use that room, but still be disciplined: prioritize trend_label over short-term RSI unless the setup is clearly strong or RSI is extreme (roughly <28 oversold or >85 overbought).
-- Strongly prefer BUY in "Bullish" (or price_above_200_sma=True) + low/oversold RSI.
+- Deterministic Entry A (pullback): Bullish (or price_above_200_sma) AND RSI <= constraints.buy_pullback_rsi.
+- Deterministic Entry B (grind/continuation): flat book AND Bullish AND
+  buy_pullback_rsi < RSI <= constraints.buy_grind_rsi_max (and RSI < sell_overbought_rsi).
+  Prefer BUY when Entry A or Entry B would fire, unless a hard block applies.
+- Still disciplined: prioritize trend_label; do not chase RSI above buy_grind_rsi_max for new buys.
 - In "High Volatility Regime" or "Elevated Volatility" → favor HOLD unless there is a clear extreme oversold setup (RSI < 25) + Bullish.
 - If regime_days_in_state >= 18 and "Volatility" in market_regime → prefer reduced size (soft damper active).
 - If regime_changed_today → extra caution on new entries.
-- SELL on RSI >= 88 (overbought) regardless of trend.
-- For SELL with profit: approximate tiers (<7% full, 7-15% ~30%, 15-25% ~40%, >25% ~60%); full exit in Bearish.
+- SELL on RSI >= constraints.sell_overbought_rsi (overbought) regardless of trend.
+- For SELL with profit: approximate tiers using take_profit_pnl_pct (~7% full / partial tiers);
+  full exit in Bearish.
 - Extreme oversold (RSI < 25-28 range) can still justify a BUY even in a Bearish trend if drawdown is low (<2%) and suggested_position_size is valid.
 
 In REASON, briefly state if your decision agrees with or overrides the likely deterministic logic
-(e.g. "Agrees with pullback BUY setup" or "Overrides HOLD due to extreme RSI=12 in Bearish trend with low drawdown").
+(e.g. "Agrees with Entry B grind BUY" or "Overrides HOLD due to extreme RSI=12 in Bearish trend with low drawdown").
 
 Output format (exact, nothing else):
 ACTION: <BUY or SELL or HOLD>
@@ -1501,6 +1594,9 @@ def main(
             return
         # Check local deterministic filters before calling Grok
         auto_hold, reason = should_auto_hold(packet, thresholds=auto_hold_thresholds)
+        det_action, det_reason = determine_deterministic_action(
+            packet, thresholds=auto_hold_thresholds or DEFAULT_SOFT_THRESHOLDS
+        )
         if auto_hold and not shadow_mode:
             logger.info(f"AUTO-HOLD (local filter): {reason} | RSI={packet['market_data']['rsi_14']:.1f}, Regime={packet['market_data']['market_regime']}, Rel Vol={packet['market_data']['relative_volume']:.2f}")
             price = packet["market_data"]["price"]
@@ -1527,6 +1623,7 @@ def main(
             return  # Skip Grok and execution
         if auto_hold and shadow_mode:
             logger.info(f"AUTO-HOLD (would fire, but shadow_mode — querying Grok anyway): {reason}")
+        logger.info(f"Deterministic setup: {det_action} — {det_reason}")
         # ── Step 2: Query Grok (single call, reused by both shadow and normal) ──
         grok_action = None
         grok_reason = None
@@ -1543,11 +1640,16 @@ def main(
         if shadow_mode:
             log_entry = {
                 "date": datetime.now().strftime("%Y-%m-%d"),
+                # Legacy gate label (invite Grok vs auto-HOLD)
                 "deterministic_action": "HOLD" if auto_hold else "GROK_DECIDED",
                 "deterministic_reason": reason,
+                # Entry A/B + exit mirror of the research backtest
+                "strategy_action": det_action,
+                "strategy_reason": det_reason,
                 "grok_action": grok_action,
                 "grok_reason": grok_reason,
                 "shadow_mode": True,
+                "entry_b_research": True,
                 "executed": False,
                 "packet_summary": {
                     "rsi": packet["market_data"].get("rsi_14"),
@@ -1692,7 +1794,10 @@ if __name__ == "__main__":
     )
 
     if use_relaxed_gates:
-        logger.info("Using RELAXED_SOFT_THRESHOLDS for should_auto_hold (hard safety blocks unchanged)")
+        logger.info(
+            "Using ENTRY_B_RESEARCH_THRESHOLDS via RELAXED_SOFT_THRESHOLDS "
+            "(hard safety blocks unchanged; Entry B grind path active)"
+        )
 
     main(
         dry_run=args.dry_run,
