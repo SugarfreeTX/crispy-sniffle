@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
@@ -867,16 +868,100 @@ def fetch_msft_daily() -> Optional[Dict[str, Any]]:
         logger.error(f"Error fetching MSFT data: {e}")
         return None
 
+# api.x.ai is behind Cloudflare. A non-streaming completion sends no bytes until
+# the model finishes, so the proxy resets the socket while the client is still
+# waiting for the status line (ConnectionError / RemoteDisconnected, typically
+# around 60s). Streaming keeps the connection alive with reasoning and content
+# deltas. Mirrors equity_msft/research_loop/grok_client.py.
+_GROK_URL = "https://api.x.ai/v1/chat/completions"
+_GROK_MAX_RETRIES = 5
+_GROK_BACKOFF_SECONDS = 2.0
+_GROK_MAX_BACKOFF_SECONDS = 30.0
+_GROK_CONNECT_TIMEOUT_SECONDS = 20
+_GROK_READ_TIMEOUT_SECONDS = 3600
+_GROK_RETRY_STATUS = {408, 429, 500, 502, 503, 504, 520, 522, 524}
+_GROK_RETRY_EXC = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
+def _grok_backoff_seconds(attempt: int) -> float:
+    return min(_GROK_BACKOFF_SECONDS * 2**attempt, _GROK_MAX_BACKOFF_SECONDS)
+
+
+def _sse_data(raw: str) -> Optional[str]:
+    data_lines = []
+    for line in raw.split("\n"):
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if not data_lines:
+        return None
+    return "\n".join(data_lines)
+
+
+def _iter_sse_payloads(response: requests.Response):
+    response.encoding = response.encoding or "utf-8"
+    buffer = ""
+    for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+        if not chunk:
+            continue
+        buffer += chunk.replace("\r\n", "\n").replace("\r", "\n")
+        while "\n\n" in buffer:
+            raw, buffer = buffer.split("\n\n", 1)
+            payload = _sse_data(raw)
+            if payload is not None:
+                yield payload
+    payload = _sse_data(buffer)
+    if payload is not None:
+        yield payload
+
+
+def _chat_text_from_grok_response(response: requests.Response) -> str:
+    """Read a chat completion, including an SSE stream. Never json-decode a stream."""
+    content_type = response.headers.get("Content-Type", "")
+    if "text/event-stream" not in content_type:
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(f"Grok API returned an empty completion: {data}")
+        return content.strip()
+
+    parts: list[str] = []
+    for payload in _iter_sse_payloads(response):
+        if payload.strip() == "[DONE]":
+            break
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        for choice in event.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") or {}
+            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                parts.append(delta["content"])
+            message = choice.get("message") or {}
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                parts.append(message["content"])
+    text = "".join(parts).strip()
+    if not text:
+        raise RuntimeError("Grok API stream ended without content")
+    return text
+
+
 # Grok API call functions
 def query_grok(packet: Dict[str, Any], api_key: str) -> Optional[Dict[str, Any]]:
     """Query Grok AI for trading decision with error handling"""
-    url = "https://api.x.ai/v1/chat/completions"
-    
     logger.info("Sending data packet to Grok for analysis...")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
     }
 
     prompt = f"""
@@ -919,35 +1004,80 @@ Data packet:
     body = {
         "model": "grok-4.6",
         "reasoning_effort": "high",
+        "stream": True,
         "messages": [
             {"role": "user", "content": prompt}
         ]
     }
 
-    try:
-        response = requests.post(url, headers=headers, json=body, timeout=3600)
-        logger.info(f"Response status code: {response.status_code}")
-        logger.info(f"Response headers: {response.headers}")
-        if response.status_code == 403:
-            logger.error(f"403 Forbidden error. Response text: {response.text}")
-        response.raise_for_status()
-        
-        result = response.json()
-        logger.info("Successfully received response from Grok")
-        return result
-        
-    except requests.exceptions.Timeout:
-        logger.error("Grok API request timed out")
-        return None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Grok API request failed: {e}")
-        return None
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Grok response as JSON: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error calling Grok API: {e}")
-        return None
+    last_error: Exception | None = None
+    for attempt in range(_GROK_MAX_RETRIES):
+        started = time.monotonic()
+        try:
+            # Fresh session per attempt so a reset keep-alive connection is never reused.
+            with requests.Session() as session:
+                response = session.post(
+                    _GROK_URL,
+                    headers=headers,
+                    json=body,
+                    timeout=(_GROK_CONNECT_TIMEOUT_SECONDS, _GROK_READ_TIMEOUT_SECONDS),
+                    stream=True,
+                )
+                try:
+                    elapsed = time.monotonic() - started
+                    logger.info(
+                        f"Response status code: {response.status_code} (headers in {elapsed:.1f}s)"
+                    )
+                    if response.status_code in _GROK_RETRY_STATUS and attempt < _GROK_MAX_RETRIES - 1:
+                        logger.warning(
+                            f"Grok API HTTP {response.status_code} after {elapsed:.0f}s; "
+                            f"retrying ({attempt + 1}/{_GROK_MAX_RETRIES})"
+                        )
+                    else:
+                        if response.status_code == 403:
+                            logger.error(f"403 Forbidden error. Response text: {response.text[:500]}")
+                        if response.status_code >= 400:
+                            logger.error(
+                                f"Grok API request failed with status {response.status_code}: "
+                                f"{response.text[:500]}"
+                            )
+                            return None
+                        text = _chat_text_from_grok_response(response)
+                        logger.info("Successfully received response from Grok")
+                        return {"choices": [{"message": {"content": text}}]}
+                finally:
+                    response.close()
+        except _GROK_RETRY_EXC as e:
+            last_error = e
+            elapsed = time.monotonic() - started
+            if attempt == _GROK_MAX_RETRIES - 1:
+                break
+            logger.warning(
+                f"Grok API request failed after {elapsed:.0f}s: {e}. "
+                f"Retrying ({attempt + 1}/{_GROK_MAX_RETRIES})"
+            )
+        except RuntimeError as e:
+            # A stream that closes before any content is the same failure mode as
+            # a socket reset: retry it. Other runtime errors are not transient.
+            if "without content" not in str(e) or attempt == _GROK_MAX_RETRIES - 1:
+                logger.error(f"Unexpected error calling Grok API: {e}")
+                return None
+            last_error = e
+            elapsed = time.monotonic() - started
+            logger.warning(
+                f"Grok API stream ended without content after {elapsed:.0f}s. "
+                f"Retrying ({attempt + 1}/{_GROK_MAX_RETRIES})"
+            )
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
+            logger.error(f"Failed to parse Grok response: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error calling Grok API: {e}")
+            return None
+        time.sleep(_grok_backoff_seconds(attempt))
+
+    logger.error(f"Grok API request failed: {last_error}")
+    return None
 
 
 def parse_action(response: Dict[str, Any]) -> tuple[str, str]:
